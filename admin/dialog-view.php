@@ -92,6 +92,7 @@ function cw_admin_dialog_view() {
                 $.get({
                     url: `${apiBase}/${dialogId}`,
                     headers: { 'X-WP-Nonce': nonce },
+                    cache: false,
                 }).done((res) => {
                     if (!res || !res.dialog) return;
                     $status.text(`Статус: ${res.dialog.status}`);

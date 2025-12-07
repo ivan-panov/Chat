@@ -100,6 +100,7 @@ jQuery(function ($) {
         return $.get({
             url: `${CW_API.rest}/${session.id}`,
             data: { token: session.token },
+            cache: false,
         });
     }
 
