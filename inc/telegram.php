@@ -77,7 +77,8 @@ function cw_telegram_webhook_handler($request) {
     $wpdb->insert($wpdb->prefix . 'cw_messages', [
         'dialog_id' => $dialog_id,
         'sender'    => 'telegram',
-        'message'   => $reply
+        'message'   => $reply,
+        'created_at'=> current_time('mysql')
     ]);
 
     return ['status' => 'ok'];

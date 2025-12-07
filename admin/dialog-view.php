@@ -66,6 +66,8 @@ function cw_admin_dialog_view() {
 
         <h2>Сообщения</h2>
 
+        <p class="description">Ответить через Telegram: отправьте в бот строку вида <code>#<?= $id ?> Ваш ответ</code>.</p>
+
         <div style="
             background:#fff;
             border:1px solid #ddd;

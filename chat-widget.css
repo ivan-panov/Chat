@@ -42,17 +42,19 @@
     position: fixed;
     bottom: 95px;
     right: 25px;
-    width: 320px;
-    max-height: 450px;
+    width: 360px;
+    max-height: 520px;
 
     background: #fff;
-    border-radius: 12px;
+    border-radius: 16px;
     overflow: hidden;
 
     display: none;
 
     box-shadow: 0 18px 40px rgba(0,0,0,0.28);
     animation: slideUp 0.35s ease-out;
+    display: flex;
+    flex-direction: column;
 }
 
 /* Анимация появления */
@@ -62,34 +64,66 @@
 }
 
 /* --- Шапка чата --- */
-#cw-modal h3 {
+.cw-header {
     margin: 0;
     padding: 16px;
-
-    background: #ff6a00;
+    background: linear-gradient(135deg, #ff7e00, #ff5100);
     color: #fff;
-    font-size: 18px;
-    font-weight: bold;
-
     display: flex;
+    justify-content: space-between;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
 }
 
-#cw-modal h3::before {
-    content: "";
-    width: 34px;
-    height: 34px;
-    background: #fff;
+.cw-header h3 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.cw-header .cw-subtitle {
+    margin: 4px 0 0;
+    font-size: 13px;
+    opacity: 0.9;
+}
+
+.cw-operator-status {
+    width: 12px;
+    height: 12px;
+    background: #1bd741;
     border-radius: 50%;
     display: inline-block;
-    background-image: url('https://cdn-icons-png.flaticon.com/512/1946/1946429.png');
-    background-size: cover;
+    box-shadow: 0 0 0 6px rgba(27,215,65,0.25);
 }
 
 /* --- Контейнер внутри окна --- */
 #cw-modal-content {
     padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    height: 100%;
+    box-sizing: border-box;
+}
+
+.cw-section {
+    background: #fff;
+    border: 1px solid #f2f2f2;
+    border-radius: 12px;
+    padding: 12px;
+    box-shadow: inset 0 1px 0 rgba(0,0,0,0.02);
+}
+
+.cw-two-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.cw-operator-hint {
+    margin: 0 0 10px;
+    color: #888;
+    font-size: 13px;
 }
 
 /* Поля */
@@ -115,25 +149,89 @@
 
 #cw-modal textarea {
     resize: none;
-    height: 80px;
+    min-height: 70px;
 }
 
-/* Кнопка отправки */
-#cw-send {
+.cw-section button {
     width: 100%;
     background: #ff6a00;
     color: #fff;
     border: none;
     padding: 12px;
-    border-radius: 8px;
+    border-radius: 10px;
     cursor: pointer;
     font-size: 15px;
     font-weight: bold;
     transition: 0.25s;
 }
 
-#cw-send:hover {
+.cw-section button:hover {
     background: #ff5800;
+}
+
+#cw-chat {
+    display: flex;
+    flex-direction: column;
+    height: 380px;
+}
+
+.cw-chat-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #f1f1f1;
+    padding-bottom: 8px;
+    margin-bottom: 10px;
+}
+
+.cw-chat-meta strong {
+    display: block;
+}
+
+#cw-messages {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-right: 5px;
+}
+
+.cw-message {
+    background: #f6f7f7;
+    border-radius: 10px;
+    padding: 8px 10px;
+}
+
+.cw-message.from-user {
+    background: #e8f5ff;
+    align-self: flex-end;
+}
+
+.cw-message.from-admin,
+.cw-message.from-telegram {
+    background: #fff3e6;
+}
+
+.cw-message-top {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: #666;
+}
+
+.cw-message-body {
+    white-space: pre-wrap;
+    margin-top: 4px;
+    color: #333;
+}
+
+.cw-reply {
+    margin-top: 10px;
+}
+
+.cw-reply textarea {
+    margin-bottom: 8px;
 }
 
 /* --- Мобильная адаптация --- */
