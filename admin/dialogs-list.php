@@ -3,6 +3,23 @@
 function cw_admin_dialogs_page() {
     global $wpdb;
 
+    // Обработка действий (закрыть / удалить)
+    if (!empty($_GET['cw_action']) && !empty($_GET['_wpnonce'])) {
+        $action = sanitize_text_field($_GET['cw_action']);
+        $id     = isset($_GET['id']) ? intval($_GET['id']) : 0;
+
+        if ($id && wp_verify_nonce($_GET['_wpnonce'], 'cw_dialog_action_' . $id)) {
+            if ($action === 'close') {
+                $wpdb->update($wpdb->prefix . 'cw_dialogs', ['status' => 'closed'], ['id' => $id]);
+                echo '<div class="updated"><p>Диалог #' . intval($id) . ' закрыт.</p></div>';
+            } elseif ($action === 'delete') {
+                $wpdb->delete($wpdb->prefix . 'cw_messages', ['dialog_id' => $id]);
+                $wpdb->delete($wpdb->prefix . 'cw_dialogs', ['id' => $id]);
+                echo '<div class="updated"><p>Диалог #' . intval($id) . ' удалён.</p></div>';
+            }
+        }
+    }
+
     // Загружаем список диалогов
     $dialogs = $wpdb->get_results("
         SELECT *
@@ -30,7 +47,7 @@ function cw_admin_dialogs_page() {
                     <th>Телефон</th>
                     <th width="100">Статус</th>
                     <th width="150">Создан</th>
-                    <th width="80">Открыть</th>
+                    <th width="220">Действия</th>
                 </tr>
                 </thead>
 
@@ -57,10 +74,9 @@ function cw_admin_dialogs_page() {
                         <td><?= esc_html($d->created_at) ?></td>
 
                         <td>
-                            <a href="<?= admin_url('admin.php?page=cw-dialog-view&id=' . intval($d->id)) ?>"
-                               class="button button-small">
-                                Открыть
-                            </a>
+                            <a href="<?= admin_url('admin.php?page=cw-dialog-view&id=' . intval($d->id)) ?>" class="button button-small">Открыть</a>
+                            <a href="<?= wp_nonce_url(admin_url('admin.php?page=cw-dialogs&cw_action=close&id=' . intval($d->id)), 'cw_dialog_action_' . intval($d->id)) ?>" class="button button-small">Закрыть</a>
+                            <a href="<?= wp_nonce_url(admin_url('admin.php?page=cw-dialogs&cw_action=delete&id=' . intval($d->id)), 'cw_dialog_action_' . intval($d->id)) ?>" class="button button-small" onclick="return confirm('Удалить диалог?');">Удалить</a>
                         </td>
                     </tr>
 

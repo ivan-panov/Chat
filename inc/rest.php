@@ -27,6 +27,43 @@ add_action('rest_api_init', function () {
             'token' => [ 'required' => true ],
         ],
     ]);
+
+    // Админские маршруты для работы с диалогами в реальном времени
+    register_rest_route('cw/v1', '/admin/dialog/(?P<id>\d+)', [
+        'methods'             => 'GET',
+        'callback'            => 'cw_rest_admin_get_dialog',
+        'permission_callback' => function () { return current_user_can('manage_options'); },
+        'args'                => [
+            'id' => [ 'validate_callback' => 'is_numeric' ],
+        ],
+    ]);
+
+    register_rest_route('cw/v1', '/admin/dialog/(?P<id>\d+)/message', [
+        'methods'             => 'POST',
+        'callback'            => 'cw_rest_admin_add_message',
+        'permission_callback' => function () { return current_user_can('manage_options'); },
+        'args'                => [
+            'id' => [ 'validate_callback' => 'is_numeric' ],
+        ],
+    ]);
+
+    register_rest_route('cw/v1', '/admin/dialog/(?P<id>\d+)/close', [
+        'methods'             => 'POST',
+        'callback'            => 'cw_rest_admin_close_dialog',
+        'permission_callback' => function () { return current_user_can('manage_options'); },
+        'args'                => [
+            'id' => [ 'validate_callback' => 'is_numeric' ],
+        ],
+    ]);
+
+    register_rest_route('cw/v1', '/admin/dialog/(?P<id>\d+)', [
+        'methods'             => 'DELETE',
+        'callback'            => 'cw_rest_admin_delete_dialog',
+        'permission_callback' => function () { return current_user_can('manage_options'); },
+        'args'                => [
+            'id' => [ 'validate_callback' => 'is_numeric' ],
+        ],
+    ]);
 });
 
 /**
@@ -207,4 +244,115 @@ function cw_rest_validate_dialog(int $dialog_id, string $token) {
     }
 
     return $dialog;
+}
+
+/**
+ * Admin: получить диалог и все сообщения.
+ */
+function cw_rest_admin_get_dialog( WP_REST_Request $request ) {
+    global $wpdb;
+
+    $dialog_id = intval($request->get_param('id'));
+
+    $dialog = $wpdb->get_row($wpdb->prepare(
+        "SELECT * FROM {$wpdb->prefix}cw_dialogs WHERE id = %d",
+        $dialog_id
+    ));
+
+    if (!$dialog) {
+        return new WP_Error('cw_not_found', 'Диалог не найден.', ['status' => 404]);
+    }
+
+    $messages = $wpdb->get_results($wpdb->prepare(
+        "SELECT sender, message, created_at FROM {$wpdb->prefix}cw_messages WHERE dialog_id = %d ORDER BY id ASC",
+        $dialog_id
+    ));
+
+    return new WP_REST_Response([
+        'dialog'   => $dialog,
+        'messages' => $messages,
+    ], 200);
+}
+
+/**
+ * Admin: добавить сообщение от оператора.
+ */
+function cw_rest_admin_add_message( WP_REST_Request $request ) {
+    global $wpdb;
+
+    $dialog_id = intval($request->get_param('id'));
+    $message   = sanitize_textarea_field($request->get_param('message'));
+
+    if (empty($message)) {
+        return new WP_Error('cw_bad_request', 'Сообщение не может быть пустым.', ['status' => 400]);
+    }
+
+    $dialog = $wpdb->get_row($wpdb->prepare(
+        "SELECT * FROM {$wpdb->prefix}cw_dialogs WHERE id = %d",
+        $dialog_id
+    ));
+
+    if (!$dialog) {
+        return new WP_Error('cw_not_found', 'Диалог не найден.', ['status' => 404]);
+    }
+
+    $insert_message = $wpdb->insert(
+        $wpdb->prefix . 'cw_messages',
+        [
+            'dialog_id'  => $dialog_id,
+            'sender'     => 'admin',
+            'message'    => $message,
+            'created_at' => current_time('mysql'),
+        ]
+    );
+
+    if ($insert_message === false) {
+        return new WP_Error('cw_db_error', 'Не удалось сохранить сообщение.', ['status' => 500]);
+    }
+
+    if (function_exists('cw_send_to_telegram')) {
+        $text = "📨 Ответ оператора\n<b>Диалог #{$dialog_id}</b>\n\n" . esc_html($message);
+        cw_send_to_telegram($text);
+    }
+
+    return new WP_REST_Response(['status' => 'ok'], 200);
+}
+
+/**
+ * Admin: закрыть диалог.
+ */
+function cw_rest_admin_close_dialog( WP_REST_Request $request ) {
+    global $wpdb;
+
+    $dialog_id = intval($request->get_param('id'));
+
+    $updated = $wpdb->update(
+        $wpdb->prefix . 'cw_dialogs',
+        [ 'status' => 'closed' ],
+        [ 'id' => $dialog_id ]
+    );
+
+    if ($updated === false) {
+        return new WP_Error('cw_db_error', 'Не удалось закрыть диалог.', ['status' => 500]);
+    }
+
+    return new WP_REST_Response(['status' => 'ok'], 200);
+}
+
+/**
+ * Admin: удалить диалог вместе с сообщениями.
+ */
+function cw_rest_admin_delete_dialog( WP_REST_Request $request ) {
+    global $wpdb;
+
+    $dialog_id = intval($request->get_param('id'));
+
+    $wpdb->delete($wpdb->prefix . 'cw_messages', [ 'dialog_id' => $dialog_id ]);
+    $deleted = $wpdb->delete($wpdb->prefix . 'cw_dialogs', [ 'id' => $dialog_id ]);
+
+    if ($deleted === false) {
+        return new WP_Error('cw_db_error', 'Не удалось удалить диалог.', ['status' => 500]);
+    }
+
+    return new WP_REST_Response(['status' => 'deleted'], 200);
 }

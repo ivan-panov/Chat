@@ -213,6 +213,11 @@
     background: #fff3e6;
 }
 
+.cw-message.from-system {
+    background: #eef1f4;
+    color: #5c6670;
+}
+
 .cw-message-top {
     display: flex;
     justify-content: space-between;

@@ -48,18 +48,32 @@ jQuery(function ($) {
         messagesEl.empty();
     }
 
+    const INTRO_KEY = 'cw_intro_prompt_shown';
+
     function renderMessages(list) {
         messagesEl.empty();
 
-        list.forEach((msg) => {
+        const session = loadSession();
+        const shouldShowIntro = !session && !localStorage.getItem(INTRO_KEY);
+        const messagesToRender = shouldShowIntro
+            ? [{ sender: 'system', message: 'Сообщение: представьтесь', created_at: '' }, ...list]
+            : list;
+
+        if (shouldShowIntro) {
+            localStorage.setItem(INTRO_KEY, '1');
+        }
+
+        messagesToRender.forEach((msg) => {
             const item = $('<div class="cw-message"></div>');
             item.addClass(`from-${msg.sender}`);
 
             const sender = msg.sender === 'admin' ? 'Оператор'
                 : msg.sender === 'telegram' ? 'Telegram'
+                : msg.sender === 'system' ? ''
                 : 'Вы';
 
-            item.append(`<div class="cw-message-top"><span>${sender}</span><small>${msg.created_at}</small></div>`);
+            const meta = msg.created_at ? `<small>${msg.created_at}</small>` : '';
+            item.append(`<div class="cw-message-top"><span>${sender}</span>${meta}</div>`);
             item.append(`<div class="cw-message-body"></div>`);
             item.find('.cw-message-body').text(msg.message);
 
@@ -72,7 +86,7 @@ jQuery(function ($) {
     function setMeta(dialog) {
         $("#cw-chat-username").text(dialog.user_name);
         $("#cw-chat-phone").text(dialog.phone ? `(${dialog.phone})` : '');
-        statusLine.text(dialog.status === 'open' ? 'Ожидание оператора' : 'Диалог закрыт');
+        statusLine.text(dialog.status === 'open' ? 'Ожидание оператора' : '');
     }
 
     function showChat(dialog, messages) {
@@ -205,6 +219,7 @@ jQuery(function ($) {
         }).fail(resetChat);
     } else {
         // если нет сессии — настраиваем тексты
+        renderMessages([]);
         $(".cw-operator-hint").text(CW_API.texts.operator || 'Оператор скоро подключится');
         startBtn.text(CW_API.texts.startCta || 'Начать чат');
         sendBtn.text(CW_API.texts.sendCta || 'Отправить');
