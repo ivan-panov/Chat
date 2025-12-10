@@ -7,6 +7,9 @@
         $.ajaxSetup({
             beforeSend(xhr) {
                 xhr.setRequestHeader('X-WP-Nonce', api.nonce);
+            },
+            xhrFields: {
+                withCredentials: true
             }
         });
     }
@@ -108,13 +111,34 @@
                 lastMessageId = 0;
                 lastReadMsg = 0;
 
+                // очистим окно, но НЕ добавляем локальное системное сообщение,
+                // чтобы не дублировать запись, которая уже добавлена на сервере
                 chatWindow.empty();
-                appendSystemMessage("Создан новый диалог.");
 
                 badge.hide();
                 newDialogBtn.addClass("disabled");
 
-                if (callback) callback();
+                // Немедленно загрузим историю с сервера — там уже есть системное сообщение.
+                $.ajax({
+                    url: api.root + "dialogs/" + dialogId + "/messages",
+                    method: "GET",
+                    success(msgs, status, xhr) {
+                        const dlgStatus = xhr.getResponseHeader("X-Dialog-Status");
+                        if (dlgStatus === "closed") newDialogBtn.removeClass("disabled");
+
+                        let maxId = lastMessageId;
+                        msgs.forEach(m => {
+                            appendMessage(m);
+                            const mid = Number(m.id);
+                            if (mid > maxId) maxId = mid;
+                        });
+                        if (maxId > lastMessageId) lastMessageId = maxId;
+
+                        setTimeout(scrollToBottom, 40);
+
+                        if (callback) callback();
+                    }
+                });
             }
         });
     }
