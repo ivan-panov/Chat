@@ -1,145 +1,259 @@
-/* ============================
-   LiveChat STYLED CHAT WIDGET
-   ============================ */
-
-#cw-widget {
+/* ============================================================
+   🔵 КНОПКА ОТКРЫТИЯ ЧАТА — ПРЕМИУМ СТИЛЬ
+============================================================ */
+#cw-open-btn {
     position: fixed;
-    bottom: 25px;
-    right: 25px;
-    z-index: 999999;
-    font-family: 'Arial', sans-serif;
-}
-
-/* --- Круглая плавающая кнопка --- */
-#cw-open {
-    width: 60px;
-    background: #ff6a00;
-    border-radius: 50%;
-    border: none;
-    cursor: pointer;
-
+    bottom: 30px;
+    right: 30px;
+    width: 62px;
+    height: 62px;
+    background: #ff7a00;
     color: #fff;
-    font-size: 26px;
+    border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-
-    box-shadow: 0px 8px 25px rgba(0,0,0,0.25);
-    transition: 0.25s;
+    cursor: pointer;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    z-index: 999999;
+    transition: 0.25s ease;
 }
 
-#cw-open::before {
-    content: "💬";
+#cw-open-btn:hover {
+    transform: scale(1.07);
 }
 
-#cw-open:hover {
-    transform: scale(1.08);
-    background: #ff5800;
+#cw-open-btn svg {
+    width: 28px;
+    height: 28px;
 }
 
-/* --- Чат-окно --- */
-#cw-modal {
+
+/* 🔴 Красный бейдж — точка уведомления */
+#cw-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 12px;
+    height: 12px;
+    background: #ff2b2b;
+    border-radius: 50%;
+    display: none; /* Появляется только при новых сообщениях */
+    box-shadow: 0 0 6px rgba(0,0,0,0.35);
+}
+
+
+/* ============================================================
+   🟦 КОНТЕЙНЕР ЧАТА
+============================================================ */
+#cw-chat-box {
     position: fixed;
-    bottom: 95px;
-    right: 25px;
-    width: 320px;
-    max-height: 450px;
-
-    background: #fff;
-    border-radius: 12px;
+    bottom: 110px;
+    right: 30px;
+    width: 330px;
+    height: 480px;
+    background: #ffffff;
+    border-radius: 16px;
+    display: flex;
+    flex-direction: column;
     overflow: hidden;
-
-    display: none;
-
-    box-shadow: 0 18px 40px rgba(0,0,0,0.28);
-    animation: slideUp 0.35s ease-out;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.25);
+    z-index: 999999;
+    animation: cwFadeIn 0.25s ease;
 }
 
-/* Анимация появления */
-@keyframes slideUp {
-    from { opacity: 0; transform: translateY(20px); }
+@keyframes cwFadeIn {
+    from { opacity: 0; transform: translateY(10px); }
     to   { opacity: 1; transform: translateY(0); }
 }
 
-/* --- Шапка чата --- */
-#cw-modal h3 {
-    margin: 0;
-    padding: 16px;
 
-    background: #ff6a00;
+/* ============================================================
+   🟧 ЗАГОЛОВОК
+============================================================ */
+#cw-header {
+    background: linear-gradient(135deg, #ff7e00, #ff5500);
+    padding: 14px;
     color: #fff;
-    font-size: 18px;
+    font-size: 17px;
     font-weight: bold;
-
     display: flex;
-    align-items: center;
-    gap: 10px;
+    justify-content: space-between;
 }
 
-#cw-modal h3::before {
-    content: "";
-    width: 34px;
-    height: 34px;
-    background: #fff;
-    border-radius: 50%;
-    display: inline-block;
-    background-image: url('https://cdn-icons-png.flaticon.com/512/1946/1946429.png');
-    background-size: cover;
+#cw-close {
+    cursor: pointer;
+    font-size: 22px;
+    font-weight: bold;
 }
 
-/* --- Контейнер внутри окна --- */
-#cw-modal-content {
-    padding: 18px;
+#cw-close:hover {
+    transform: scale(1.15);
 }
 
-/* Поля */
-#cw-modal input,
-#cw-modal textarea {
+
+/* ============================================================
+   💬 ОКНО СООБЩЕНИЙ
+============================================================ */
+#cw-chat-window {
+    flex: 1;
+    padding: 14px;
+    background: #f7f7f7;
+    overflow-y: auto;
+}
+
+#cw-chat-window::-webkit-scrollbar {
+    width: 6px;
+}
+
+#cw-chat-window::-webkit-scrollbar-thumb {
+    background: #c6c6c6;
+    border-radius: 3px;
+}
+
+
+/* ============================================================
+   💭 СООБЩЕНИЯ
+============================================================ */
+
+.cw-msg {
+    margin: 10px 0;
+    max-width: fit-content;
+}
+
+/* 👉 Сообщения пользователя */
+.cw-user {
+    margin-left: auto;
+}
+
+.cw-user .cw-bubble {
+    background: #c9ffcf;
+    padding: 10px 16px;
+    border-radius: 14px 14px 4px 14px;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.10);
+}
+
+
+/* 👉 Сообщения оператора */
+.cw-op {
+    margin-right: auto;
+}
+
+.cw-op .cw-bubble {
+    background: #ececec;
+    padding: 10px 16px;
+    border-radius: 14px 14px 14px 4px;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.10);
+}
+
+
+/* ============================================================
+   ⚠️ СИСТЕМНЫЕ УВЕДОМЛЕНИЯ
+============================================================ */
+
+.cw-system {
     width: 100%;
-    padding: 10px 12px;
-    margin-bottom: 12px;
-
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    font-size: 14px;
-
-    transition: 0.25s;
+    display: block;
 }
 
-#cw-modal input:focus,
-#cw-modal textarea:focus {
-    border-color: #ff6a00;
-    box-shadow: 0 0 0 2px rgba(255,106,0,0.2);
-    outline: none;
+.cw-system .cw-bubble {
+    background: #ffe5ba;
+    color: #8a5a00;
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    text-align: center;
+
+    max-width: 80%;
+    margin: 8px auto;
+    display: block;
+
+    box-shadow: 0 2px 6px rgba(0,0,0,0.07);
+    border-left: 3px solid #ff9000;
 }
 
-#cw-modal textarea {
-    resize: none;
-    height: 80px;
+
+/* ============================================================
+   ⌨️ ПАНЕЛЬ ВВОДА
+============================================================ */
+#cw-input-box {
+    display: flex;
+    gap: 10px;
+    padding: 12px;
+    border-top: 1px solid #ddd;
+    background: #fff;
+    height: 45px;
+}
+
+/* Поле */
+#cw-input {
+    flex: 1;
+    height: 46px;
+    padding: 0 14px;
+    border-radius: 10px;
+    border: 1px solid #bbb;
+    font-size: 15px;
+    line-height: 46px;
+}
+
+#cw-input:focus {
+    border-color: #ff9800;
+    box-shadow: 0 0 0 2px rgba(255,152,0,0.25);
 }
 
 /* Кнопка отправки */
 #cw-send {
-    width: 100%;
-    background: #ff6a00;
-    color: #fff;
+    width: 52px;
+    height: 46px;
+    background: #ff9800;
     border: none;
-    padding: 12px;
-    border-radius: 8px;
+    border-radius: 10px;
+    font-size: 20px;
+    color: #fff;
+
     cursor: pointer;
-    font-size: 15px;
-    font-weight: bold;
-    transition: 0.25s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 #cw-send:hover {
-    background: #ff5800;
+    background: #ff6a00;
+    transform: scale(1.05);
 }
 
-/* --- Мобильная адаптация --- */
-@media (max-width: 420px) {
-    #cw-modal {
-        width: calc(100% - 40px);
-        right: 20px;
+
+/* ============================================================
+   🆕 КНОПКА «НОВЫЙ ДИАЛОГ»
+============================================================ */
+#cw-new-dialog-btn {
+    padding: 10px;
+    text-align: center;
+    background: #f2f2f2;
+    border-top: 1px solid #ddd;
+    cursor: pointer;
+}
+
+#cw-new-dialog-btn:hover {
+    background: #e4e4e4;
+}
+
+#cw-new-dialog-btn.disabled {
+    opacity: 0.4;
+    cursor: default;
+    pointer-events: none;
+}
+
+
+/* ============================================================
+   📱 АДАПТИВНОСТЬ
+============================================================ */
+@media (max-width: 480px) {
+    #cw-chat-box {
+        width: 100%;
+        height: 80%;
+        right: 0;
+        bottom: 0;
+        border-radius: 0;
     }
 }

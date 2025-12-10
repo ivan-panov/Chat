@@ -1,0 +1,195 @@
+/* ============================================
+   ЛЕВАЯ КОЛОНКА — СПИСОК ДИАЛОГОВ
+============================================ */
+#cw-admin-wrapper {
+    display: flex;
+    gap: 25px;
+    margin-top: 20px;
+}
+
+.cw-column-left {
+    width: 260px;
+    min-height: 600px;
+    background: #ffffff;
+    border: 1px solid #dcdcdc;
+    border-radius: 6px;
+    padding: 10px;
+    overflow-y: auto;
+}
+
+.cw-dialog-item {
+    padding: 10px;
+    margin-bottom: 8px;
+    background: #f5f5f5;
+    border-radius: 6px;
+    cursor: pointer;
+    border: 1px solid #e3e3e3;
+    transition: 0.2s;
+}
+
+.cw-dialog-item:hover {
+    background: #ececec;
+}
+
+.cw-dialog-item.active {
+    background: #cfe7ff;
+    border-color: #7bb4ff;
+}
+
+.cw-unread {
+    color: #d40000;
+    font-weight: bold;
+}
+
+
+/* ============================================
+   ПРАВАЯ КОЛОНКА — ГЕО + МЕССЕДЖИ
+============================================ */
+.cw-column-right {
+    flex: 1;
+    background: #fff;
+    border: 1px solid #dcdcdc;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    height: 800px;
+}
+
+/* GEO block */
+#cw-geo-box {
+    padding: 15px;
+    border-bottom: 1px solid #e2e2e2;
+    font-size: 14px;
+    background: #fafafa;
+    min-height: 90px;
+}
+
+/* MESSAGES */
+#cw-messages-box {
+    flex: 1;
+    padding: 15px;
+    overflow-y: auto;
+    background: #ffffff;
+}
+
+.cw-empty {
+    text-align: center;
+    color: #777;
+    margin-top: 40px;
+}
+
+/* MESSAGE DESIGN */
+.cw-msg {
+    max-width: 70%;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    border-radius: 10px;
+    position: relative;
+}
+
+.cw-msg-user {
+    background: #eaeaea;
+    margin-right: auto;
+}
+
+.cw-msg-op {
+    background: #d5ffd0;
+    margin-left: auto;
+}
+
+.cw-msg-time {
+    font-size: 11px;
+    color: #777;
+    margin-top: 4px;
+}
+
+
+/* ============================================
+   INPUT PANEL (НИЖНЯЯ ПАНЕЛЬ)
+============================================ */
+.cw-input-panel {
+    display: flex;
+    gap: 10px;
+    padding: 12px;
+    border-top: 1px solid #dcdcdc;
+    background: #fafafa;
+}
+
+#cw-send-input {
+    flex: 1;
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 1px solid #bfbfbf;
+    font-size: 14px;
+}
+
+#cw-send-btn,
+#cw-close-btn,
+#cw-delete-btn {
+    padding: 8px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+#cw-send-btn {
+    background: #2d89ff;
+    color: white;
+    border: none;
+}
+
+#cw-send-btn:hover {
+    background: #1d6fe0;
+}
+
+#cw-close-btn {
+    background: #ffb31a;
+    color: white;
+    border: none;
+}
+
+#cw-close-btn:hover {
+    background: #e69c0a;
+}
+
+#cw-delete-btn {
+    background: #ff5c5c;
+    color: white;
+    border: none;
+}
+
+#cw-delete-btn:hover {
+    background: #e64444;
+}
+
+
+/* ============================================
+   СКРОЛЛ
+============================================ */
+#cw-messages-box::-webkit-scrollbar,
+.cw-column-left::-webkit-scrollbar {
+    width: 8px;
+}
+
+#cw-messages-box::-webkit-scrollbar-thumb,
+.cw-column-left::-webkit-scrollbar-thumb {
+    background: #bcbcbc;
+    border-radius: 4px;
+}
+
+/* ============================================
+   АДАПТИВНОСТЬ
+============================================ */
+@media (max-width: 1200px) {
+    #cw-admin-wrapper {
+        flex-direction: column;
+    }
+
+    .cw-column-left {
+        width: 100%;
+        height: 250px;
+    }
+
+    .cw-column-right {
+        height: 600px;
+    }
+}
