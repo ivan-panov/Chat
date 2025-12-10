@@ -2,6 +2,18 @@ jQuery(function ($) {
 
     const api = CW_ADMIN.rest;
 
+    // Устанавливаем глобально X-WP-Nonce и отправку cookies для всех jQuery AJAX-запросов
+    if (typeof CW_ADMIN !== 'undefined' && CW_ADMIN.nonce) {
+        $.ajaxSetup({
+            beforeSend(xhr) {
+                xhr.setRequestHeader('X-WP-Nonce', CW_ADMIN.nonce);
+            },
+            xhrFields: {
+                withCredentials: true
+            }
+        });
+    }
+
     let currentDialog = null;
     let lastMessageId = 0;
     let firstLoad = true;
@@ -47,6 +59,7 @@ jQuery(function ($) {
         loadGeo();
         loadMessages(true);
 
+        // Этот POST теперь будет посылать X-WP-Nonce и куки благодаря $.ajaxSetup
         $.post(api + `dialogs/${currentDialog}/read/`);
     });
 
@@ -92,16 +105,29 @@ jQuery(function ($) {
                     const isOp = Number(m.is_operator) === 1;
                     const cls = isOp ? "cw-msg-op" : "cw-msg-user";
 
+                    // Экранируем пользовательские сообщения (чтобы избежать XSS),
+                    // для operator сообщений допускаем HTML (сервер должен их очищать/фильтровать).
+                    let content = '';
+                    if (isOp) {
+                        content = m.message;
+                    } else {
+                        content = $('<div/>').text(m.message).html();
+                    }
+
                     html += `
                         <div class="cw-msg ${cls}">
-                            ${m.message}
+                            ${content}
                             <div class="cw-msg-time">${m.created_at}</div>
                         </div>
                         <div style="clear:both"></div>
                     `;
 
                     if (!isOp && m.id > lastMessageId && !firstLoad) {
-                        document.getElementById("cw-sound").play();
+                        // play sound
+                        const snd = document.getElementById("cw-sound");
+                        if (snd && typeof snd.play === 'function') {
+                            try { snd.play(); } catch(e) { /* ignore */ }
+                        }
                     }
 
                     if (m.id > lastMessageId) {
@@ -138,6 +164,7 @@ jQuery(function ($) {
         let text = $("#cw-send-input").val().trim();
         if (!text) return;
 
+        // POST отправит nonce и куки благодаря $.ajaxSetup
         $.post(api + `dialogs/${currentDialog}/messages/`, {
             message: text,
             operator: 1
