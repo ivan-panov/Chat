@@ -4,12 +4,24 @@ if (!defined('ABSPATH')) exit;
 global $wpdb;
 
 /* ============================================================
+   Безопасное получение IP (учёт прокси/forwarded)
+============================================================ */
+function cw_get_ip() {
+    if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+        $ips = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
+        return trim($ips[0]);
+    }
+    return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+}
+
+/* ============================================================
    GEO ПО IP
 ============================================================ */
 function cw_geo($ip) {
+    // Переключаемся на https
     $url = "https://ip-api.com/json/{$ip}?lang=ru";
 
-    $response = wp_remote_get($url);
+    $response = wp_remote_get($url, ['timeout' => 5]);
     if (is_wp_error($response)) {
         return [
             'country' => '-', 'city' => '-', 'region' => '-', 'ip' => $ip,
@@ -27,10 +39,6 @@ function cw_geo($ip) {
     ];
 }
 
-
-/* ============================================================
-   REST API РОУТЫ
-============================================================ */
 add_action('rest_api_init', function () {
 
     register_rest_route('cw/v1', '/dialogs', [
@@ -71,6 +79,7 @@ add_action('rest_api_init', function () {
 });
 
 
+
 /* ============================================================
    ДИАЛОГИ
 ============================================================ */
@@ -82,6 +91,14 @@ function cw_rest_dialogs(WP_REST_Request $r) {
     /* ----- СОЗДАНИЕ НОВОГО ДИАЛОГА ----- */
     if ($r->get_method() === "POST") {
 
+        // --- простая защита от частых запросов (rate-limit на IP) ---
+        $ip = cw_get_ip();
+        $key = 'cw_create_dialog_' . md5($ip);
+        if (get_transient($key)) {
+            return new WP_REST_Response(['error' => 'too_many_requests'], 429);
+        }
+        set_transient($key, 1, 5); // 1 запрос в 5 секунд
+
         // создаём диалог
         $wpdb->insert($D, [
             'status' => 'open',
@@ -91,7 +108,7 @@ function cw_rest_dialogs(WP_REST_Request $r) {
         $id = $wpdb->insert_id;
 
         // добавляем GEO
-        $geo = cw_geo($_SERVER['REMOTE_ADDR']);
+        $geo = cw_geo($ip);
 
         $wpdb->update($D, [
             'geo_ip'      => $geo['ip'],
@@ -100,7 +117,6 @@ function cw_rest_dialogs(WP_REST_Request $r) {
             'geo_region'  => $geo['region'],
             'geo_browser' => $geo['browser']
         ], ['id' => $id]);
-
 
         // ВАЖНО! создаём системное сообщение
         $wpdb->insert($M, [
@@ -129,6 +145,7 @@ function cw_rest_dialogs(WP_REST_Request $r) {
 }
 
 
+
 /* ============================================================
    СООБЩЕНИЯ
 ============================================================ */
@@ -139,13 +156,14 @@ function cw_rest_messages(WP_REST_Request $r) {
     $D = $wpdb->prefix . "cw_dialogs";
     $M = $wpdb->prefix . "cw_messages";
 
-    $status = $wpdb->get_var("SELECT status FROM $D WHERE id=$id");
+    // используем prepare
+    $status = $wpdb->get_var( $wpdb->prepare( "SELECT status FROM {$D} WHERE id=%d", $id ) );
 
     /* ---- GET ---- */
     if ($r->get_method() === "GET") {
 
-        // теперь НЕ возвращаем пустой массив — выдаём историю даже если closed
-        $msgs = $wpdb->get_results("SELECT * FROM $M WHERE dialog_id=$id ORDER BY id ASC");
+        // возвращаем историю — используем prepare
+        $msgs = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$M} WHERE dialog_id=%d ORDER BY id ASC", $id ) );
 
         $res = new WP_REST_Response($msgs);
         $res->header("X-Dialog-Status", $status);
@@ -153,12 +171,29 @@ function cw_rest_messages(WP_REST_Request $r) {
     }
 
     /* ---- POST ---- */
-    if ($status === 'closed' && !$r->get_param('operator')) {
+    // Если диалог закрыт — запрет для клиентов (non-operator)
+    $isOp = intval($r->get_param("operator"));
+
+    // Проверяем header nonce для возможности авторизации через REST
+    $nonce = $r->get_header('X-WP-Nonce') ?: $r->get_header('X_WP_Nonce');
+
+    // Если кто-то пытается выставить operator=1 — разрешаем только admin / валидный nonce
+    if ($isOp) {
+        if ( ! current_user_can('manage_options') ) {
+            if ( ! $nonce || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
+                return new WP_REST_Response(['error' => 'permission_denied'], 403);
+            }
+        }
+    }
+
+    if ($status === 'closed' && !$isOp) {
         return new WP_REST_Response(['error' => 'dialog_closed'], 403);
     }
 
-    $msg = sanitize_text_field($r->get_param("message"));
-    $isOp = intval($r->get_param("operator"));
+    // Ограничим длину входящего сообщения
+    $raw_msg = $r->get_param("message");
+    if (!is_string($raw_msg)) $raw_msg = '';
+    $msg = sanitize_text_field( mb_substr($raw_msg, 0, 2000) );
 
     $wpdb->insert($M, [
         'dialog_id' => $id,
@@ -168,7 +203,7 @@ function cw_rest_messages(WP_REST_Request $r) {
         'created_at' => current_time('mysql')
     ]);
 
-    // Telegram уведомление
+    // Telegram уведомление — только для клиентских сообщений
     if (!$isOp) {
         if (function_exists('cw_tg_notify_operator')) {
             cw_tg_notify_operator($id, $msg);
@@ -187,6 +222,14 @@ function cw_rest_close(WP_REST_Request $r) {
     $id = intval($r['id']);
     $D = $wpdb->prefix . "cw_dialogs";
     $M = $wpdb->prefix . "cw_messages";
+
+    // только админ может закрыть диалог
+    $nonce = $r->get_header('X-WP-Nonce') ?: $r->get_header('X_WP_Nonce');
+    if ( ! current_user_can('manage_options') ) {
+        if ( ! $nonce || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
+            return new WP_REST_Response(['error' => 'permission_denied'], 403);
+        }
+    }
 
     $wpdb->update($D, ['status' => 'closed'], ['id'=>$id]);
 
@@ -209,6 +252,14 @@ function cw_rest_delete(WP_REST_Request $r) {
     global $wpdb;
     $id = intval($r['id']);
 
+    // только админ
+    $nonce = $r->get_header('X-WP-Nonce') ?: $r->get_header('X_WP_Nonce');
+    if ( ! current_user_can('manage_options') ) {
+        if ( ! $nonce || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
+            return new WP_REST_Response(['error' => 'permission_denied'], 403);
+        }
+    }
+
     $wpdb->delete($wpdb->prefix . "cw_messages", ['dialog_id' => $id]);
     $wpdb->delete($wpdb->prefix . "cw_dialogs", ['id' => $id]);
 
@@ -223,11 +274,20 @@ function cw_rest_read(WP_REST_Request $r) {
     global $wpdb;
     $id = intval($r['id']);
 
-    $wpdb->query("
-        UPDATE {$wpdb->prefix}cw_messages
-        SET unread=0
-        WHERE dialog_id=$id AND is_operator=0
-    ");
+    // Только оператор/админ может пометить прочитанным
+    $nonce = $r->get_header('X-WP-Nonce') ?: $r->get_header('X_WP_Nonce');
+    if ( ! current_user_can('manage_options') ) {
+        if ( ! $nonce || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
+            return new WP_REST_Response(['error' => 'permission_denied'], 403);
+        }
+    }
+
+    $wpdb->query(
+        $wpdb->prepare(
+            "UPDATE {$wpdb->prefix}cw_messages SET unread=0 WHERE dialog_id=%d AND is_operator=0",
+            $id
+        )
+    );
 
     return ['status' => 'read'];
 }
@@ -240,9 +300,10 @@ function cw_rest_geo(WP_REST_Request $r) {
     global $wpdb;
     $id = intval($r['id']);
 
-    return $wpdb->get_row("
-        SELECT geo_country, geo_city, geo_region, geo_ip, geo_browser
-        FROM {$wpdb->prefix}cw_dialogs
-        WHERE id=$id
-    ");
+    return $wpdb->get_row(
+        $wpdb->prepare(
+            "SELECT geo_country, geo_city, geo_region, geo_ip, geo_browser FROM {$wpdb->prefix}cw_dialogs WHERE id=%d",
+            $id
+        )
+    );
 }
