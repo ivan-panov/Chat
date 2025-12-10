@@ -263,7 +263,7 @@
         }
 
         // запуск poll
-        setInterval(pollMessages, 1200);
+        setInterval(pollMessages, 3000);
 
         $("#cw-send").on("click", sendMessage);
         $("#cw-input").on("keypress", function (e) {
