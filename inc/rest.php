@@ -7,7 +7,7 @@ global $wpdb;
    GEO ПО IP
 ============================================================ */
 function cw_geo($ip) {
-    $url = "http://ip-api.com/json/{$ip}?lang=ru";
+    $url = "https://ip-api.com/json/{$ip}?lang=ru";
 
     $response = wp_remote_get($url);
     if (is_wp_error($response)) {
