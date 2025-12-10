@@ -2,6 +2,15 @@
 
     const api = window.CW_API || {};
 
+    // Передаём wp nonce в заголовках для REST (если локализовано в PHP)
+    if (api.nonce) {
+        $.ajaxSetup({
+            beforeSend(xhr) {
+                xhr.setRequestHeader('X-WP-Nonce', api.nonce);
+            }
+        });
+    }
+
     let dialogId = localStorage.getItem("cw_dialog_id") || null;
     let lastMessageId = 0;
     let lastReadMsg = Number(localStorage.getItem("cw_last_read_message_id") || 0);
@@ -41,10 +50,15 @@
     /* ----------------------------------------------------------
        Системное сообщение
     ---------------------------------------------------------- */
+    function escapeHtml(text) {
+        return $('<div/>').text(text).html();
+    }
+
     function appendSystemMessage(text) {
+        const safe = escapeHtml(text);
         chatWindow.append(`
             <div class="cw-msg cw-system">
-                <div class="cw-bubble">${text}</div>
+                <div class="cw-bubble">${safe}</div>
             </div>
         `);
     }
@@ -62,15 +76,18 @@
         }
 
         if (isOp) {
+            // Для сообщений оператора предполагаем, что сервер отдаёт безопасный HTML (например, SBP-ссылка)
             chatWindow.append(`
                 <div class="cw-msg cw-op">
-                    <div class="cw-bubble">${text}</div>
+                    <div class="cw-bubble">${m.message}</div>
                 </div>
             `);
         } else {
+            // Для пользовательских сообщений — строгий escape, чтобы избежать XSS
+            const safeText = escapeHtml(text);
             chatWindow.append(`
                 <div class="cw-msg cw-user">
-                    <div class="cw-bubble">${text}</div>
+                    <div class="cw-bubble">${safeText}</div>
                 </div>
             `);
         }
@@ -217,7 +234,7 @@
     /* ----------------------------------------------------------
        ИНИЦИАЛИЗАЦИЯ
     ---------------------------------------------------------- */
-    $(function () {
+     $(function () {
 
         /* Открытие чата */
         $("#cw-open-btn").on("click", function () {
@@ -263,7 +280,7 @@
         }
 
         // запуск poll
-        setInterval(pollMessages, 3000);
+        setInterval(pollMessages, 2000);
 
         $("#cw-send").on("click", sendMessage);
         $("#cw-input").on("keypress", function (e) {
