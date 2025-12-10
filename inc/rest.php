@@ -4,41 +4,166 @@ if (!defined('ABSPATH')) exit;
 global $wpdb;
 
 /* ============================================================
-   Безопасное получение IP (учёт прокси/forwarded)
+   Надёжное получение IP клиента (учёт Cloudflare, X-Real-IP, X-Forwarded-For)
+   Возвращает строку IP
 ============================================================ */
 function cw_get_ip() {
-    if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
-        $ips = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
-        return trim($ips[0]);
+    // Cloudflare
+    if (!empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
+        return trim($_SERVER['HTTP_CF_CONNECTING_IP']);
     }
+
+    // Nginx / прямой заголовок
+    if (!empty($_SERVER['HTTP_X_REAL_IP'])) {
+        return trim($_SERVER['HTTP_X_REAL_IP']);
+    }
+
+    // X-Forwarded-For (берём первый элемент)
+    if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+        $parts = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
+        return trim($parts[0]);
+    }
+
+    // fallback
     return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
 }
 
 /* ============================================================
-   GEO ПО IP
+   GEO ПО IP с fallback: ipapi.co -> ipinfo.io -> ip-api (http)
+   Кешируем результат transient'ом на 12 часов
+   Логируем ошибки (для отладки)
 ============================================================ */
 function cw_geo($ip) {
-    // Переключаемся на https
-    $url = "https://ip-api.com/json/{$ip}?lang=ru";
+    $ip = esc_attr($ip);
+    $key = 'cw_geo_' . md5($ip);
 
-    $response = wp_remote_get($url, ['timeout' => 5]);
-    if (is_wp_error($response)) {
-        return [
-            'country' => '-', 'city' => '-', 'region' => '-', 'ip' => $ip,
-            'browser' => ($_SERVER['HTTP_USER_AGENT'] ?? '-')
-        ];
+    // Попробуем взять из кеша
+    $cached = get_transient($key);
+    if ($cached) {
+        return $cached;
     }
 
-    $data = json_decode(wp_remote_retrieve_body($response), true);
-    return [
-        'country' => $data['country'] ?? '-',
-        'city'    => $data['city'] ?? '-',
-        'region'  => $data['regionName'] ?? '-',
+    $default = [
+        'country' => '-',
+        'city'    => '-',
+        'region'  => '-',
         'ip'      => $ip,
         'browser' => ($_SERVER['HTTP_USER_AGENT'] ?? '-')
     ];
+
+    // опция для токена ipinfo (если есть)
+    $ipinfo_token = get_option('cw_ipinfo_token');
+
+    $providers = [
+        // ipapi.co (HTTPS, бесплатный план поддерживает HTTPS)
+        ['url' => "https://ipapi.co/{$ip}/json/", 'type' => 'ipapi'],
+        // ipinfo.io (HTTPS) — можно добавить токен
+        ['url' => "https://ipinfo.io/{$ip}/json", 'type' => 'ipinfo'],
+        // ip-api (HTTP fallback) — бесплатный план работает по HTTP
+        ['url' => "http://ip-api.com/json/{$ip}?lang=ru", 'type' => 'ip-api']
+    ];
+
+    foreach ($providers as $p) {
+        $url = $p['url'];
+
+        // Добавим токен к ipinfo, если есть
+        if ($p['type'] === 'ipinfo' && !empty($ipinfo_token)) {
+            // если в url уже есть query, добавим корректно
+            $sep = (strpos($url, '?') === false) ? '?' : '&';
+            $url .= $sep . 'token=' . rawurlencode($ipinfo_token);
+        }
+
+        $response = wp_remote_get($url, [
+            'timeout' => 8,
+            'headers' => ['Accept' => 'application/json']
+        ]);
+
+        if (is_wp_error($response)) {
+            error_log("cw_geo: wp_remote_get error for {$url} : " . $response->get_error_message());
+            continue;
+        }
+
+        $body = wp_remote_retrieve_body($response);
+        if (empty($body)) {
+            error_log("cw_geo: empty body from {$url}");
+            continue;
+        }
+
+        $data = json_decode($body, true);
+        if (!is_array($data)) {
+            error_log("cw_geo: invalid json from {$url} : " . substr($body, 0, 300));
+            continue;
+        }
+
+        // Разбор по типу провайдера
+        if ($p['type'] === 'ipapi') {
+            // ipapi.co -> { country_name, region, city, ip }
+            if (!empty($data['error'])) {
+                // ipapi может вернуть { error: true, reason: "..."} или подобное
+                error_log("cw_geo: ipapi error for {$ip}: " . json_encode($data));
+                continue;
+            }
+
+            $result = [
+                'country' => $data['country_name'] ?? '-',
+                'city'    => $data['city'] ?? '-',
+                'region'  => $data['region'] ?? '-',
+                'ip'      => $data['ip'] ?? $ip,
+                'browser' => ($_SERVER['HTTP_USER_AGENT'] ?? '-')
+            ];
+
+            set_transient($key, $result, 12 * HOUR_IN_SECONDS);
+            return $result;
+        }
+
+        if ($p['type'] === 'ipinfo') {
+            // ipinfo.io -> { ip, city, region, country, ... }
+            if (!empty($data['error'])) {
+                error_log("cw_geo: ipinfo error for {$ip}: " . json_encode($data));
+                continue;
+            }
+
+            // Примечание: country у ipinfo — код страны (например "RU"). Оставляем как есть.
+            $result = [
+                'country' => $data['country'] ?? '-',
+                'city'    => $data['city'] ?? '-',
+                'region'  => $data['region'] ?? '-',
+                'ip'      => $data['ip'] ?? $ip,
+                'browser' => ($_SERVER['HTTP_USER_AGENT'] ?? '-')
+            ];
+
+            set_transient($key, $result, 12 * HOUR_IN_SECONDS);
+            return $result;
+        }
+
+        if ($p['type'] === 'ip-api') {
+            // ip-api -> { status: 'success'|'fail', country, city, regionName, query }
+            if (!empty($data['status']) && $data['status'] === 'success') {
+                $result = [
+                    'country' => $data['country'] ?? '-',
+                    'city'    => $data['city'] ?? '-',
+                    'region'  => $data['regionName'] ?? '-',
+                    'ip'      => $data['query'] ?? $ip,
+                    'browser' => ($_SERVER['HTTP_USER_AGENT'] ?? '-')
+                ];
+
+                set_transient($key, $result, 12 * HOUR_IN_SECONDS);
+                return $result;
+            } else {
+                // ip-api может вернуть {"status":"fail","message":"SSL unavailable..."}
+                error_log("cw_geo: ip-api fail for {$ip} at {$url}: " . json_encode($data));
+                continue;
+            }
+        }
+    }
+
+    // Если ничего не сработало — возвращаем дефолтные значения
+    return $default;
 }
 
+/* ============================================================
+   REST API РОУТЫ
+============================================================ */
 add_action('rest_api_init', function () {
 
     register_rest_route('cw/v1', '/dialogs', [
@@ -77,8 +202,6 @@ add_action('rest_api_init', function () {
         'permission_callback' => '__return_true'
     ]);
 });
-
-
 
 /* ============================================================
    ДИАЛОГИ
@@ -134,17 +257,15 @@ function cw_rest_dialogs(WP_REST_Request $r) {
     return $wpdb->get_results("
         SELECT d.*,
         (
-            SELECT COUNT(*) FROM $M m
+            SELECT COUNT(*) FROM {$M} m
             WHERE m.dialog_id = d.id
             AND m.is_operator = 0
             AND m.unread = 1
         ) AS unread
-        FROM $D d
+        FROM {$D} d
         ORDER BY d.id DESC
     ");
 }
-
-
 
 /* ============================================================
    СООБЩЕНИЯ
@@ -213,7 +334,6 @@ function cw_rest_messages(WP_REST_Request $r) {
     return ['status' => 'ok'];
 }
 
-
 /* ============================================================
    ЗАКРЫТЬ ДИАЛОГ
 ============================================================ */
@@ -244,7 +364,6 @@ function cw_rest_close(WP_REST_Request $r) {
     return ['status' => 'closed'];
 }
 
-
 /* ============================================================
    УДАЛИТЬ ДИАЛОГ
 ============================================================ */
@@ -265,7 +384,6 @@ function cw_rest_delete(WP_REST_Request $r) {
 
     return ['status' => 'deleted'];
 }
-
 
 /* ============================================================
    ПОМЕТИТЬ ПРОЧИТАННЫМИ
@@ -292,9 +410,8 @@ function cw_rest_read(WP_REST_Request $r) {
     return ['status' => 'read'];
 }
 
-
 /* ============================================================
-   GEO
+   GEO (возвращает одну запись geo)
 ============================================================ */
 function cw_rest_geo(WP_REST_Request $r) {
     global $wpdb;
