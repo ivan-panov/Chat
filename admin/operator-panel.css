@@ -193,3 +193,67 @@
         height: 600px;
     }
 }
+
+/* ============================================
+   КНОПКА "Запросить данные" (Admin)
+============================================ */
+#cw-admin-wrapper .cw-input-panel #cw-request-btn {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    line-height: 1;
+    color: #ffffff;
+    background: linear-gradient(180deg, #2b8ad6 0%, #2573bf 100%);
+    border: 1px solid rgba(0,0,0,0.08);
+    border-radius: 6px;
+    box-shadow: 0 2px 0 rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.06);
+    cursor: pointer;
+    transition: transform .08s ease, box-shadow .12s ease, opacity .12s ease;
+    text-decoration: none;
+    vertical-align: middle;
+}
+
+/* Hover / Focus */
+#cw-admin-wrapper .cw-input-panel #cw-request-btn:hover,
+#cw-admin-wrapper .cw-input-panel #cw-request-btn:focus {
+    background: linear-gradient(180deg, #2988d6 0%, #1f6fb2 100%);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+    transform: translateY(-1px);
+    outline: none;
+}
+
+/* Active */
+#cw-admin-wrapper .cw-input-panel #cw-request-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 3px 8px rgba(0,0,0,0.08);
+}
+
+/* Disabled */
+#cw-admin-wrapper .cw-input-panel #cw-request-btn[disabled],
+#cw-admin-wrapper .cw-input-panel #cw-request-btn.disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+/* Маленькая иконка слева (опционально) */
+#cw-admin-wrapper .cw-input-panel #cw-request-btn .cw-btn-icon {
+    margin-right: 6px;
+    vertical-align: middle;
+}
+
+/* Адаптивность: на узких экранах кнопка занимает строку */
+@media (max-width: 800px) {
+    #cw-admin-wrapper .cw-input-panel {
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+    }
+
+    #cw-admin-wrapper .cw-input-panel #cw-request-btn {
+        margin-left: 0;
+        width: 100%;
+        text-align: center;
+    }
+}

@@ -244,6 +244,101 @@
     pointer-events: none;
 }
 
+/* Системные сообщения некликабельны, КРОМЕ форм запроса */
+.cw-msg.cw-system:not(.cw-request) {
+    pointer-events: none;
+}
+
+/* Форма запроса — полностью интерактивна */
+.cw-msg.cw-request,
+.cw-msg.cw-request * {
+    pointer-events: auto;
+    user-select: text;
+}
+
+.cw-request input,
+.cw-request button {
+    pointer-events: auto;
+    user-select: text;
+    background: #fff;
+}
+/* ============================================================
+   📝 ФОРМА ЗАПРОСА ДАННЫХ (FIX)
+============================================================ */
+
+.cw-msg.cw-request .cw-bubble {
+    padding: 14px;
+    text-align: left;
+}
+
+/* Заголовок */
+.cw-request strong {
+    display: block;
+    margin-bottom: 10px;
+    font-size: 14px;
+    color: #8a5a00;
+}
+
+/* Поля ввода */
+.cw-request input {
+    width: 100%;
+    height: 38px;
+    box-sizing: border-box;
+
+    margin-bottom: 8px;
+    padding: 0 10px;
+
+    font-size: 14px;
+    line-height: 38px;
+
+    border: 1px solid #c9a25d;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #333;
+
+    outline: none;
+}
+
+.cw-request input:focus {
+    border-color: #ff9800;
+    box-shadow: 0 0 0 2px rgba(255,152,0,0.25);
+}
+
+/* Кнопка отправки */
+.cw-request .cw-request-submit {
+    width: 100%;
+    height: 40px;
+    margin-top: 10px;
+
+    border-radius: 8px;
+    border: none;
+
+    background: linear-gradient(135deg, #ff9800, #ff6a00);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+
+    cursor: pointer;
+    transition: 0.2s ease;
+}
+
+.cw-request .cw-request-submit:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+}
+
+.cw-request .cw-request-submit:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+/* Статус под кнопкой */
+.cw-request .cw-request-status {
+    margin-top: 8px;
+    font-size: 13px;
+    color: #555;
+}
+
 
 /* ============================================================
    📱 АДАПТИВНОСТЬ

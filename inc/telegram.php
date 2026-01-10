@@ -9,7 +9,7 @@ function cw_tg_get_token() {
 }
 
 function cw_tg_get_admin_chat() {
-    return get_option('cw_tg_admin_chat');
+   return get_option('cw_tg_admin_chat');
 }
 
 /* ============================================================
@@ -88,13 +88,21 @@ function cw_tg_webhook_handler(WP_REST_Request $r) {
 
             $sbp_url = "https://qr.nspk.ru/AS1A005O0HP24U9I8P0AN5VA03QFOL1F?type=01&bank=100000000111&crc=30da";
 
-            // HTML-кликабельная ссылка
-            $html_link = '<a href="' . esc_url($sbp_url) . '" target="_blank">СБП QR</a>';
+            // HTML-кликабельная ссылка — пропускаем через wp_kses
+            $html_link = '<a href="' . esc_url($sbp_url) . '" target="_blank" rel="noopener noreferrer">СБП QR</a>';
+            $allowed = [
+                'a' => [
+                    'href' => [],
+                    'target' => [],
+                    'rel' => []
+                ]
+            ];
+            $safe = wp_kses($html_link, $allowed);
 
             // Вставляем ссылку в чат клиента
             $wpdb->insert($tableM, [
                 'dialog_id'   => $dialog,
-                'message'     => $html_link,
+                'message'     => $safe,
                 'is_operator' => 1,
                 'unread'      => 1,
                 'created_at'  => current_time('mysql')
@@ -103,6 +111,24 @@ function cw_tg_webhook_handler(WP_REST_Request $r) {
             cw_tg_send($chat, "📲 СБП QR отправлен в диалог #{$dialog}");
 
             return ['status' => 'sbp_sent'];
+        }
+
+        /* ---------- КНОПКА: Запрос данных (Имя обяз., Телефон/Email опц.) ---------- */
+        if ($action === 'request') {
+
+            // Вставляем в диалог служебное сообщение оператора, которое клиент интерпретирует как форму
+            $request_payload = '[request]name_optional_contact';
+
+            $wpdb->insert($tableM, [
+                'dialog_id'   => $dialog,
+                'message'     => $request_payload,
+                'is_operator' => 1,
+                'unread'      => 1,
+                'created_at'  => current_time('mysql')
+            ]);
+
+            cw_tg_send($chat, "📨 Запрос данных отправлен в диалог #{$dialog}");
+            return ['status' => 'request_sent'];
         }
 
         /* ---------- Закрыть ---------- */
@@ -204,7 +230,6 @@ function cw_tg_webhook_handler(WP_REST_Request $r) {
             ]);
 
             cw_tg_send($cid, "✔ Отправлено в диалог #{$dialogId}");
-
             return ['status' => 'fallback_reply'];
         }
 
@@ -214,8 +239,10 @@ function cw_tg_webhook_handler(WP_REST_Request $r) {
     return ['status' => 'ignored_update'];
 }
 
+
 /* ============================================================
    Уведомление оператора о новом сообщении клиента
+   (добавлена кнопка "Запрос" в клавиатуру)
 ============================================================ */
 function cw_tg_notify_operator($dialogId, $messageText) {
 
@@ -225,6 +252,7 @@ function cw_tg_notify_operator($dialogId, $messageText) {
     $keyboard = [
         [
             ["text" => "💬 Ответить", "callback_data" => "cw_reply_{$dialogId}"],
+            ["text" => "📋 Запрос",   "callback_data" => "cw_request_{$dialogId}"],
             ["text" => "💳 СБП QR",   "callback_data" => "cw_sbp_{$dialogId}"]
         ],
         [

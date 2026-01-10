@@ -29,15 +29,20 @@ function cw_operator_panel_page() {
 
                 <div class="cw-input-panel">
                     <input id="cw-send-input" type="text" placeholder="Введите сообщение...">
-                    <button id="cw-send-btn">Отправить</button>
-                    <button id="cw-close-btn">Закрыть</button>
-                    <button id="cw-delete-btn">Удалить</button>
+                    <button id="cw-send-btn" class="button button-primary">Отправить</button>
+                    <button id="cw-close-btn" class="button">Закрыть</button>
+                    <button id="cw-delete-btn" class="button">Удалить</button>
+
+                    <!-- Прямая кнопка запроса данных у клиента:
+                         Тип запроса: name_optional_contact
+                         (Имя — обязательно; Телефон/Email — опционально) -->
+                    <button id="cw-request-btn" class="button" style="margin-left:8px;">Запросить данные</button>
                 </div>
 
             </div>
         </div>
 
-        <audio id="cw-sound" src="<?php echo plugin_dir_url(__FILE__) ?>alert.mp3"></audio>
+        <audio id="cw-sound" src="<?php echo esc_url( plugin_dir_url(__FILE__) . 'alert.mp3' ); ?>"></audio>
     </div>
     <?php
 }
