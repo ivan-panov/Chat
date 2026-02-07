@@ -86,7 +86,7 @@ function cw_tg_webhook_handler(WP_REST_Request $r) {
         /* ---------- КНОПКА: СБП QR ---------- */
         if ($action === 'sbp') {
 
-            $sbp_url = "https://qr.nspk.ru/AS1A005O0HP24U9I8P0AN5VA03QFOL1F?type=01&bank=100000000111&crc=30da";
+            $sbp_url = "";
 
             // HTML-кликабельная ссылка — пропускаем через wp_kses
             $html_link = '<a href="' . esc_url($sbp_url) . '" target="_blank" rel="noopener noreferrer">СБП QR</a>';
