@@ -1,1 +1,1 @@
-plagin wordpress 8.9, php 8.3 <
+plugins wordpress 6.9.4, php 8.3 <
