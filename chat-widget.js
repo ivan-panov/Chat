@@ -138,6 +138,41 @@
         return fallback || String(href || '');
     }
 
+    function splitTrailingUrlPunctuation(urlText) {
+        let clean = String(urlText || '');
+        let trailing = '';
+
+        while (clean && /[.,!?;:)\]"']$/.test(clean)) {
+            const lastChar = clean.slice(-1);
+
+            if (lastChar === ')') {
+                const openCount = (clean.match(/\(/g) || []).length;
+                const closeCount = (clean.match(/\)/g) || []).length;
+
+                if (closeCount <= openCount) {
+                    break;
+                }
+            }
+
+            if (lastChar === ']') {
+                const openCount = (clean.match(/\[/g) || []).length;
+                const closeCount = (clean.match(/\]/g) || []).length;
+
+                if (closeCount <= openCount) {
+                    break;
+                }
+            }
+
+            trailing = lastChar + trailing;
+            clean = clean.slice(0, -1);
+        }
+
+        return {
+            clean: clean,
+            trailing: trailing
+        };
+    }
+
     function isQrPaymentLink(href, labelText) {
         const safeLabel = String(labelText || '').toLowerCase();
 
@@ -168,46 +203,71 @@
         const source = String(text ?? '');
         const links = [];
 
-        const withTokens = source.replace(
+        function pushLinkToken(hrefRaw, labelText) {
+            const safeHref = sanitizeLinkHref(hrefRaw);
+
+            if (!safeHref) {
+                return '';
+            }
+
+            const normalizedLabel = String(labelText || '').trim();
+            const finalLabel = (
+                !normalizedLabel ||
+                normalizedLabel === safeHref ||
+                normalizedLabel === hrefRaw
+            )
+                ? getShortLinkLabel(safeHref, normalizedLabel)
+                : normalizedLabel;
+
+            const token = '__CW_LINK_' + links.length + '__';
+
+            const iconHtml = isQrPaymentLink(safeHref, finalLabel)
+                ? getQrLinkIconHtml()
+                : '';
+
+            links.push(
+                '<a href="' + escapeHtml(safeHref) + '" target="_blank" rel="noopener noreferrer">' +
+                    iconHtml +
+                    '<span>' + escapeHtml(finalLabel) + '</span>' +
+                '</a>'
+            );
+
+            return token;
+        }
+
+        const withAnchorTokens = source.replace(
             /<a\b[^>]*href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/gi,
             function (_match, href1, href2, href3, labelHtml) {
                 const hrefRaw = href1 || href2 || href3 || '';
-                const safeHref = sanitizeLinkHref(hrefRaw);
-
-                if (!safeHref) {
-                    return decodeHtmlEntities(labelHtml || '');
-                }
-
                 const rawLabelText = decodeHtmlEntities(
                     String(labelHtml || '').replace(/<[^>]*>/g, '')
                 ).trim();
 
-                const labelText = (
-                    !rawLabelText ||
-                    rawLabelText === safeHref ||
-                    rawLabelText === hrefRaw
-                )
-                    ? getShortLinkLabel(safeHref, rawLabelText)
-                    : rawLabelText;
+                const token = pushLinkToken(hrefRaw, rawLabelText);
 
-                const token = '__CW_LINK_' + links.length + '__';
-
-                const iconHtml = isQrPaymentLink(safeHref, labelText)
-                    ? getQrLinkIconHtml()
-                    : '';
-
-                links.push(
-                    '<a href="' + escapeHtml(safeHref) + '" target="_blank" rel="noopener noreferrer">' +
-                        iconHtml +
-                        '<span>' + escapeHtml(labelText) + '</span>' +
-                    '</a>'
-                );
+                if (!token) {
+                    return decodeHtmlEntities(labelHtml || '');
+                }
 
                 return token;
             }
         );
 
-        let html = escapeHtml(withTokens).replace(/\r\n|\r|\n/g, '<br>');
+        const withAllTokens = withAnchorTokens.replace(
+            /(^|[\s(>])((?:https?:\/\/)[^\s<]+)/gi,
+            function (match, prefix, urlText) {
+                const parts = splitTrailingUrlPunctuation(urlText);
+                const token = pushLinkToken(parts.clean, parts.clean);
+
+                if (!token) {
+                    return match;
+                }
+
+                return prefix + token + parts.trailing;
+            }
+        );
+
+        let html = escapeHtml(withAllTokens).replace(/\r\n|\r|\n/g, '<br>');
 
         links.forEach(function (linkHtml, index) {
             const token = '__CW_LINK_' + index + '__';

@@ -355,10 +355,21 @@
     max-width: 100%;
     text-decoration: underline;
     text-underline-offset: 2px;
-    transition: color 0.2s ease, text-decoration-color 0.2s ease;
+    transition: color 0.2s ease, text-decoration-color 0.2s ease, box-shadow 0.2s ease;
+    outline: none;
+    box-shadow: none;
+    border-radius: 4px;
 }
 
-.cw-msg-user a {
+.cw-msg a:focus,
+.cw-msg a:active,
+.cw-msg a:focus-visible {
+    outline: none;
+    box-shadow: none;
+}
+
+.cw-msg-user a,
+.cw-msg-user a:visited {
     color: #8a4b00;
     font-weight: 700;
 }
@@ -368,7 +379,8 @@
     text-decoration: none;
 }
 
-.cw-msg-op a {
+.cw-msg-op a,
+.cw-msg-op a:visited {
     color: #ffffff;
     font-weight: 700;
     text-decoration-color: rgba(255, 255, 255, 0.85);
@@ -395,10 +407,19 @@
     max-width: 100%;
     text-decoration: none !important;
     line-height: 1.4;
+    outline: none;
+    box-shadow: none;
 }
 
 .cw-file-link:hover {
     text-decoration: none !important;
+}
+
+.cw-file-link:focus,
+.cw-file-link:active,
+.cw-file-link:focus-visible {
+    outline: none;
+    box-shadow: none;
 }
 
 .cw-file-icon {
@@ -414,12 +435,14 @@
     overflow-wrap: anywhere;
 }
 
-.cw-msg-user .cw-file-link {
+.cw-msg-user .cw-file-link,
+.cw-msg-user .cw-file-link:visited {
     color: #8a4b00;
     font-weight: 700;
 }
 
-.cw-msg-op .cw-file-link {
+.cw-msg-op .cw-file-link,
+.cw-msg-op .cw-file-link:visited {
     color: #ffffff;
     font-weight: 700;
 }
