@@ -1,352 +1,997 @@
 <?php
 if (!defined('ABSPATH')) exit;
 
-global $wpdb;
-
 /* ============================================================
-   Надёжное получение IP клиента (учёт Cloudflare, X-Real-IP, X-Forwarded-For)
-   Возвращает строку IP
+   REGISTER ROUTES
 ============================================================ */
-function cw_get_ip() {
-    // Cloudflare
-    if (!empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
-        return trim($_SERVER['HTTP_CF_CONNECTING_IP']);
-    }
 
-    // Nginx / прямой заголовок
-    if (!empty($_SERVER['HTTP_X_REAL_IP'])) {
-        return trim($_SERVER['HTTP_X_REAL_IP']);
-    }
-
-    // X-Forwarded-For (берём первый элемент)
-    if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
-        $parts = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
-        return trim($parts[0]);
-    }
-
-    // fallback
-    return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
-}
-
-/* ============================================================
-   GEO ПО IP с fallback: ipapi.co -> ipinfo.io -> ip-api (http)
-   Кешируем результат transient'ом на 12 часов
-   Логируем ошибки (для отладки)
-============================================================ */
-function cw_geo($ip) {
-    $ip = esc_attr($ip);
-    $key = 'cw_geo_' . md5($ip);
-
-    // Попробуем взять из кеша
-    $cached = get_transient($key);
-    if ($cached) {
-        return $cached;
-    }
-
-    $default = [
-        'country' => '-',
-        'city'    => '-',
-        'region'  => '-',
-        'ip'      => $ip,
-        'browser' => ($_SERVER['HTTP_USER_AGENT'] ?? '-')
-    ];
-
-    // опция для токена ipinfo (если есть)
-    $ipinfo_token = get_option('cw_ipinfo_token');
-
-    $providers = [
-        // ipapi.co (HTTPS, бесплатный план поддерживает HTTPS)
-        ['url' => "https://ipapi.co/{$ip}/json/", 'type' => 'ipapi'],
-        // ipinfo.io (HTTPS) — можно добавить токен
-        ['url' => "https://ipinfo.io/{$ip}/json", 'type' => 'ipinfo'],
-        // ip-api (HTTP fallback) — бесплатный план работает по HTTP
-        ['url' => "http://ip-api.com/json/{$ip}?lang=ru", 'type' => 'ip-api']
-    ];
-
-    foreach ($providers as $p) {
-        $url = $p['url'];
-
-        // Добавим токен к ipinfo, если есть
-        if ($p['type'] === 'ipinfo' && !empty($ipinfo_token)) {
-            $sep = (strpos($url, '?') === false) ? '?' : '&';
-            $url .= $sep . 'token=' . rawurlencode($ipinfo_token);
-        }
-
-        $response = wp_remote_get($url, [
-            'timeout' => 8,
-            'headers' => ['Accept' => 'application/json']
-        ]);
-
-        if (is_wp_error($response)) {
-            error_log("cw_geo: wp_remote_get error for {$url} : " . $response->get_error_message());
-            continue;
-        }
-
-        $body = wp_remote_retrieve_body($response);
-        if (empty($body)) {
-            error_log("cw_geo: empty body from {$url}");
-            continue;
-        }
-
-        $data = json_decode($body, true);
-        if (!is_array($data)) {
-            error_log("cw_geo: invalid json from {$url} : " . substr($body, 0, 300));
-            continue;
-        }
-
-        // Разбор по типу провайдера
-        if ($p['type'] === 'ipapi') {
-            // ipapi.co -> { country_name, region, city, ip }
-            if (!empty($data['error'])) {
-                error_log("cw_geo: ipapi error for {$ip}: " . json_encode($data));
-                continue;
-            }
-
-            $result = [
-                'country' => $data['country_name'] ?? '-',
-                'city'    => $data['city'] ?? '-',
-                'region'  => $data['region'] ?? '-',
-                'ip'      => $data['ip'] ?? $ip,
-                'browser' => ($_SERVER['HTTP_USER_AGENT'] ?? '-')
-            ];
-
-            set_transient($key, $result, 12 * HOUR_IN_SECONDS);
-            return $result;
-        }
-
-        if ($p['type'] === 'ipinfo') {
-            // ipinfo.io -> { ip, city, region, country, ... }
-            if (!empty($data['error'])) {
-                error_log("cw_geo: ipinfo error for {$ip}: " . json_encode($data));
-                continue;
-            }
-
-            $result = [
-                'country' => $data['country'] ?? '-',
-                'city'    => $data['city'] ?? '-',
-                'region'  => $data['region'] ?? '-',
-                'ip'      => $data['ip'] ?? $ip,
-                'browser' => ($_SERVER['HTTP_USER_AGENT'] ?? '-')
-            ];
-
-            set_transient($key, $result, 12 * HOUR_IN_SECONDS);
-            return $result;
-        }
-
-        if ($p['type'] === 'ip-api') {
-            // ip-api -> { status: 'success'|'fail', country, city, regionName, query }
-            if (!empty($data['status']) && $data['status'] === 'success') {
-                $result = [
-                    'country' => $data['country'] ?? '-',
-                    'city'    => $data['city'] ?? '-',
-                    'region'  => $data['regionName'] ?? '-',
-                    'ip'      => $data['query'] ?? $ip,
-                    'browser' => ($_SERVER['HTTP_USER_AGENT'] ?? '-')
-                ];
-
-                set_transient($key, $result, 12 * HOUR_IN_SECONDS);
-                return $result;
-            } else {
-                error_log("cw_geo: ip-api fail for {$ip} at {$url}: " . json_encode($data));
-                continue;
-            }
-        }
-    }
-
-    // Если ничего не сработало — возвращаем дефолтные значения
-    // и кешируем пустой ответ коротким TTL, чтобы не перегружать провайдеры
-    set_transient($key, $default, 30 * MINUTE_IN_SECONDS);
-    return $default;
-}
-
-/* ============================================================
-   REST API РОУТЫ
-============================================================ */
 add_action('rest_api_init', function () {
 
     register_rest_route('cw/v1', '/dialogs', [
-        'methods' => ['POST', 'GET'],
+        'methods'  => ['POST', 'GET'],
         'callback' => 'cw_rest_dialogs',
-        'permission_callback' => '__return_true'
+        'permission_callback' => function ($r) {
+            if ($r->get_method() === 'POST') return true;
+            return current_user_can('manage_options');
+        },
     ]);
 
     register_rest_route('cw/v1', '/dialogs/(?P<id>\d+)/messages', [
-        'methods' => ['GET','POST'],
+        'methods'  => ['GET', 'POST'],
         'callback' => 'cw_rest_messages',
-        'permission_callback' => '__return_true'
-    ]);
-
-    register_rest_route('cw/v1', '/dialogs/(?P<id>\d+)/close', [
-        'methods' => 'POST',
-        'callback' => 'cw_rest_close',
-        'permission_callback' => '__return_true'
-    ]);
-
-    register_rest_route('cw/v1', '/dialogs/(?P<id>\d+)/delete', [
-        'methods' => 'POST',
-        'callback' => 'cw_rest_delete',
-        'permission_callback' => '__return_true'
-    ]);
-
-    register_rest_route('cw/v1', '/dialogs/(?P<id>\d+)/read', [
-        'methods' => 'POST',
-        'callback' => 'cw_rest_read',
-        'permission_callback' => '__return_true'
+        'permission_callback' => '__return_true',
     ]);
 
     register_rest_route('cw/v1', '/dialogs/(?P<id>\d+)/geo', [
-        'methods' => 'GET',
+        'methods'  => 'GET',
         'callback' => 'cw_rest_geo',
-        'permission_callback' => '__return_true'
+        'permission_callback' => '__return_true',
+    ]);
+
+    register_rest_route('cw/v1', '/dialogs/(?P<id>\d+)/close', [
+        'methods'  => 'POST',
+        'callback' => 'cw_rest_close',
+        'permission_callback' => function () {
+            return current_user_can('manage_options');
+        },
+    ]);
+
+    register_rest_route('cw/v1', '/dialogs/(?P<id>\d+)/delete', [
+        'methods'  => 'POST',
+        'callback' => 'cw_rest_delete',
+        'permission_callback' => function () {
+            return current_user_can('manage_options');
+        },
+    ]);
+
+    register_rest_route('cw/v1', '/dialogs/(?P<id>\d+)/read', [
+        'methods'  => 'POST',
+        'callback' => 'cw_rest_read',
+        'permission_callback' => '__return_true',
     ]);
 });
 
 /* ============================================================
-   ДИАЛОГИ
+   HELPERS
 ============================================================ */
-function cw_rest_dialogs(WP_REST_Request $r) {
+
+function cw_get_client_key_from_request(WP_REST_Request $r): string {
+    $ck = $r->get_header('X-CW-Client-Key');
+    if ($ck) return sanitize_text_field($ck);
+
+    $ck = $r->get_param('client_key');
+    if ($ck) return sanitize_text_field($ck);
+
+    return '';
+}
+
+function cw_get_real_ip(): string {
+    if (!empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
+        return sanitize_text_field($_SERVER['HTTP_CF_CONNECTING_IP']);
+    }
+
+    if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+        $parts = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
+        return sanitize_text_field(trim((string) ($parts[0] ?? '')));
+    }
+
+    return sanitize_text_field($_SERVER['REMOTE_ADDR'] ?? '');
+}
+
+function cw_get_employee_dialog_access_map(): array {
+    $map = get_option('cw_employee_dialog_access', []);
+    return is_array($map) ? $map : [];
+}
+
+function cw_save_employee_dialog_access_map(array $map): void {
+    update_option('cw_employee_dialog_access', $map, false);
+}
+
+function cw_cleanup_employee_dialog_access(): void {
+    $map = cw_get_employee_dialog_access_map();
+    if (!$map) return;
+
+    $now = time();
+    $changed = false;
+
+    foreach ($map as $client_key => $items) {
+        if (!is_array($items)) {
+            unset($map[$client_key]);
+            $changed = true;
+            continue;
+        }
+
+        foreach ($items as $dialog_id => $expires_at) {
+            if ((int) $expires_at <= $now) {
+                unset($map[$client_key][$dialog_id]);
+                $changed = true;
+            }
+        }
+
+        if (empty($map[$client_key])) {
+            unset($map[$client_key]);
+            $changed = true;
+        }
+    }
+
+    if ($changed) {
+        cw_save_employee_dialog_access_map($map);
+    }
+}
+
+function cw_grant_employee_dialog_access(string $client_key, int $dialog_id, int $ttl_seconds = 3600): void {
+    if ($client_key === '' || $dialog_id <= 0) return;
+
+    cw_cleanup_employee_dialog_access();
+
+    $map = cw_get_employee_dialog_access_map();
+
+    if (!isset($map[$client_key]) || !is_array($map[$client_key])) {
+        $map[$client_key] = [];
+    }
+
+    $map[$client_key][(string) $dialog_id] = time() + max(60, $ttl_seconds);
+
+    cw_save_employee_dialog_access_map($map);
+}
+
+function cw_has_employee_dialog_access(string $client_key, int $dialog_id): bool {
+    if ($client_key === '' || $dialog_id <= 0) return false;
+
+    cw_cleanup_employee_dialog_access();
+
+    $map = cw_get_employee_dialog_access_map();
+
+    return !empty($map[$client_key][(string) $dialog_id]);
+}
+
+function cw_require_dialog_access_or_403(WP_REST_Request $r, int $dialog_id) {
+    if (current_user_can('manage_options')) return true;
+
     global $wpdb;
-    $D = $wpdb->prefix . "cw_dialogs";
-    $M = $wpdb->prefix . "cw_messages";
+    $D = $wpdb->prefix . 'cw_dialogs';
 
-    /* ----- СОЗДАНИЕ НОВОГО ДИАЛОГА ----- */
-    if ($r->get_method() === "POST") {
+    $row = $wpdb->get_row(
+        $wpdb->prepare("SELECT client_key FROM {$D} WHERE id=%d", $dialog_id)
+    );
 
-        // --- Требуем JS-cookie (cw_js=1) — защита от простых бот-скриптов ---
-        if ( empty($_COOKIE['cw_js']) || $_COOKIE['cw_js'] !== '1' ) {
-            return new WP_REST_Response(['error' => 'js_required'], 403);
+    if (!$row) {
+        return new WP_REST_Response(['error' => 'dialog_not_found'], 404);
+    }
+
+    $db_ck  = (string) $row->client_key;
+    $req_ck = cw_get_client_key_from_request($r);
+
+    if ($db_ck && $req_ck && hash_equals($db_ck, $req_ck)) {
+        return true;
+    }
+
+    if ($req_ck && cw_has_employee_dialog_access($req_ck, $dialog_id)) {
+        return true;
+    }
+
+    return new WP_REST_Response(['error' => 'forbidden'], 403);
+}
+
+function cw_client_info_from_request(WP_REST_Request $r): array {
+    $client_info = $r->get_param('client_info');
+    if (!is_array($client_info)) {
+        $client_info = [];
+    }
+
+    return [
+        'ua'        => sanitize_text_field($client_info['ua'] ?? ''),
+        'platform'  => sanitize_text_field($client_info['platform'] ?? ''),
+        'language'  => sanitize_text_field($client_info['language'] ?? ''),
+        'languages' => sanitize_text_field($client_info['languages'] ?? ''),
+        'screen'    => sanitize_text_field($client_info['screen'] ?? ''),
+        'viewport'  => sanitize_text_field($client_info['viewport'] ?? ''),
+        'timezone'  => sanitize_text_field($client_info['timezone'] ?? ''),
+        'touch'     => !empty($client_info['touch']) ? 1 : 0,
+    ];
+}
+
+function cw_detect_browser_name(string $ua): string {
+    $ua_l = strtolower($ua);
+
+    if ($ua_l === '') return 'Неизвестно';
+    if (strpos($ua_l, 'edg/') !== false) return 'Microsoft Edge';
+    if (strpos($ua_l, 'opr/') !== false || strpos($ua_l, 'opera') !== false) return 'Opera';
+    if (strpos($ua_l, 'yabrowser/') !== false) return 'Yandex Browser';
+    if (strpos($ua_l, 'vivaldi/') !== false) return 'Vivaldi';
+    if (strpos($ua_l, 'brave') !== false) return 'Brave';
+    if (strpos($ua_l, 'firefox/') !== false) return 'Firefox';
+    if (strpos($ua_l, 'samsungbrowser/') !== false) return 'Samsung Internet';
+    if (strpos($ua_l, 'ucbrowser/') !== false) return 'UC Browser';
+    if (strpos($ua_l, 'chrome/') !== false && strpos($ua_l, 'chromium') === false) return 'Chrome';
+    if (strpos($ua_l, 'safari/') !== false && strpos($ua_l, 'chrome/') === false) return 'Safari';
+    if (strpos($ua_l, 'trident/') !== false || strpos($ua_l, 'msie ') !== false) return 'Internet Explorer';
+
+    return 'Неизвестно';
+}
+
+function cw_detect_browser_version(string $ua, string $browser_name): string {
+    $map = [
+        'Microsoft Edge'    => 'edg',
+        'Opera'             => 'opr|opera',
+        'Yandex Browser'    => 'yabrowser',
+        'Vivaldi'           => 'vivaldi',
+        'Firefox'           => 'firefox',
+        'Samsung Internet'  => 'samsungbrowser',
+        'UC Browser'        => 'ucbrowser',
+        'Chrome'            => 'chrome',
+        'Safari'            => 'version',
+        'Internet Explorer' => 'msie|rv',
+    ];
+
+    if (empty($map[$browser_name])) {
+        return '';
+    }
+
+    if (preg_match('/(?:' . $map[$browser_name] . ')[\/:\s]+([0-9\.]+)/i', $ua, $m)) {
+        return sanitize_text_field($m[1]);
+    }
+
+    return '';
+}
+
+function cw_detect_os_name(string $ua, string $platform = ''): string {
+    $ua_l = strtolower($ua . ' ' . $platform);
+
+    if (strpos($ua_l, 'windows nt 10.0') !== false) return 'Windows 10/11';
+    if (strpos($ua_l, 'windows nt 6.3') !== false) return 'Windows 8.1';
+    if (strpos($ua_l, 'windows nt 6.2') !== false) return 'Windows 8';
+    if (strpos($ua_l, 'windows nt 6.1') !== false) return 'Windows 7';
+    if (strpos($ua_l, 'iphone') !== false || strpos($ua_l, 'ipad') !== false || strpos($ua_l, 'ios') !== false) return 'iOS';
+    if (strpos($ua_l, 'android') !== false) return 'Android';
+    if (strpos($ua_l, 'mac os x') !== false || strpos($ua_l, 'macintosh') !== false) return 'macOS';
+    if (strpos($ua_l, 'linux') !== false) return 'Linux';
+
+    return 'Неизвестно';
+}
+
+function cw_detect_device_type(string $ua, array $client_info = []): string {
+    $ua_l = strtolower($ua);
+    $screen = strtolower((string) ($client_info['screen'] ?? ''));
+
+    if (preg_match('/bot|crawl|spider|slurp|mediapartners|facebookexternalhit|preview/i', $ua_l)) {
+        return 'Bot';
+    }
+
+    if (strpos($ua_l, 'ipad') !== false || strpos($ua_l, 'tablet') !== false) {
+        return 'Tablet';
+    }
+
+    if (
+        strpos($ua_l, 'mobi') !== false ||
+        strpos($ua_l, 'iphone') !== false ||
+        strpos($ua_l, 'android') !== false ||
+        !empty($client_info['touch'])
+    ) {
+        return 'Mobile';
+    }
+
+    if ($screen && preg_match('/^(\d+)x(\d+)$/', $screen, $m)) {
+        $w = (int) $m[1];
+        if ($w > 0 && $w <= 900) {
+            return 'Mobile';
         }
+    }
 
-        // --- простая защита от частых запросов (rate-limit на IP) ---
-        $ip = cw_get_ip();
-        $key = 'cw_create_dialog_' . md5($ip);
-        if (get_transient($key)) {
-            return new WP_REST_Response(['error' => 'too_many_requests'], 429);
-        }
-        set_transient($key, 1, 5); // 1 запрос в 5 секунд
+    return 'Desktop';
+}
 
-        // читаем client_key (поддерживаем JSON тело и form params)
-        $client_key = '';
-        $param_ck = $r->get_param('client_key');
-        if ($param_ck === null) {
-            $json = $r->get_json_params();
-            if (!empty($json['client_key'])) $client_key = sanitize_text_field($json['client_key']);
-        } else {
-            $client_key = sanitize_text_field($param_ck);
-        }
+function cw_format_browser_label(string $ua, array $client_info = []): string {
+    $browser = cw_detect_browser_name($ua);
+    $version = cw_detect_browser_version($ua, $browser);
+    $os      = cw_detect_os_name($ua, (string) ($client_info['platform'] ?? ''));
+    $device  = cw_detect_device_type($ua, $client_info);
+    $lang    = trim((string) ($client_info['language'] ?? ''));
+    $screen  = trim((string) ($client_info['screen'] ?? ''));
+    $tz      = trim((string) ($client_info['timezone'] ?? ''));
 
-        // создаём диалог (включая client_key, если есть)
-        $inserted = $wpdb->insert($D, [
-            'status' => 'open',
-            'client_key' => $client_key,
-            'created_at' => current_time('mysql')
-        ]);
+    $parts = [];
 
-        if ($inserted === false) {
-            error_log('cw: db insert failed: ' . $wpdb->last_error);
-            return new WP_REST_Response(['error' => 'db_error'], 500);
-        }
+    $parts[] = $browser . ($version ? ' ' . $version : '');
+    $parts[] = $os;
+    $parts[] = $device;
 
-        $id = $wpdb->insert_id;
+    if ($lang !== '') {
+        $parts[] = 'Lang: ' . $lang;
+    }
 
-        // добавляем GEO
-        $geo = cw_geo($ip);
+    if ($screen !== '') {
+        $parts[] = 'Screen: ' . $screen;
+    }
 
-        $wpdb->update($D, [
-            'geo_ip'      => $geo['ip'],
+    if ($tz !== '') {
+        $parts[] = 'TZ: ' . $tz;
+    }
+
+    return implode(' | ', array_filter($parts));
+}
+
+function cw_get_geo_by_ip(string $ip): array {
+    if ($ip === '') {
+        return [
+            'country' => '',
+            'city'    => '',
+            'region'  => '',
+            'org'     => '',
+        ];
+    }
+
+    $response = wp_remote_get(
+        'https://ipwho.is/' . rawurlencode($ip),
+        [
+            'timeout' => 4,
+            'headers' => [
+                'Accept' => 'application/json',
+            ],
+        ]
+    );
+
+    if (is_wp_error($response)) {
+        return [
+            'country' => '',
+            'city'    => '',
+            'region'  => '',
+            'org'     => '',
+        ];
+    }
+
+    $code = (int) wp_remote_retrieve_response_code($response);
+    if ($code < 200 || $code >= 300) {
+        return [
+            'country' => '',
+            'city'    => '',
+            'region'  => '',
+            'org'     => '',
+        ];
+    }
+
+    $body = json_decode(wp_remote_retrieve_body($response), true);
+
+    if (!is_array($body) || empty($body['success'])) {
+        return [
+            'country' => '',
+            'city'    => '',
+            'region'  => '',
+            'org'     => '',
+        ];
+    }
+
+    $connection = isset($body['connection']) && is_array($body['connection'])
+        ? $body['connection']
+        : [];
+
+    return [
+        'country' => sanitize_text_field($body['country'] ?? ''),
+        'city'    => sanitize_text_field($body['city'] ?? ''),
+        'region'  => sanitize_text_field($body['region'] ?? ''),
+        'org'     => sanitize_text_field($connection['org'] ?? ''),
+    ];
+}
+
+function cw_ensure_dialog_geo_loaded(int $dialog_id): void {
+    if ($dialog_id <= 0) return;
+
+    global $wpdb;
+    $D = $wpdb->prefix . 'cw_dialogs';
+
+    $row = $wpdb->get_row(
+        $wpdb->prepare(
+            "SELECT id, geo_country, geo_city, geo_region, geo_org, geo_ip
+             FROM {$D}
+             WHERE id=%d",
+            $dialog_id
+        ),
+        ARRAY_A
+    );
+
+    if (!$row) return;
+
+    $country = trim((string) ($row['geo_country'] ?? ''));
+    $city    = trim((string) ($row['geo_city'] ?? ''));
+    $region  = trim((string) ($row['geo_region'] ?? ''));
+    $org     = trim((string) ($row['geo_org'] ?? ''));
+    $ip      = trim((string) ($row['geo_ip'] ?? ''));
+
+    if ($country !== '' || $city !== '' || $region !== '' || $org !== '') {
+        return;
+    }
+
+    if ($ip === '') {
+        return;
+    }
+
+    $geo = cw_get_geo_by_ip($ip);
+
+    $wpdb->update(
+        $D,
+        [
             'geo_country' => $geo['country'],
             'geo_city'    => $geo['city'],
             'geo_region'  => $geo['region'],
-            'geo_browser' => $geo['browser']
-        ], ['id' => $id]);
+            'geo_org'     => $geo['org'],
+        ],
+        ['id' => $dialog_id],
+        ['%s', '%s', '%s', '%s'],
+        ['%d']
+    );
+}
 
-        // ВАЖНО! создаём системное сообщение
-        $wpdb->insert($M, [
-            'dialog_id' => $id,
-            'message' => '[system]Создан новый диалог.',
-            'is_operator' => 1,
-            'unread' => 0,
-            'created_at' => current_time('mysql')
-        ]);
+function cw_chat_widget_upload_dir($dirs) {
+    $subdir = '/chat-widget';
 
-        return ['id' => $id];
+    $dirs['subdir'] = $subdir;
+    $dirs['path']   = $dirs['basedir'] . $subdir;
+    $dirs['url']    = $dirs['baseurl'] . $subdir;
+
+    if (!file_exists($dirs['path'])) {
+        wp_mkdir_p($dirs['path']);
     }
 
-    /* ----- СПИСОК ДИАЛОГОВ ----- */
+    return $dirs;
+}
+
+function cw_transliterate_filename(string $filename): string {
+    $filename = trim($filename);
+    if ($filename === '') {
+        return 'file-' . date('Ymd-His');
+    }
+
+    $ext  = pathinfo($filename, PATHINFO_EXTENSION);
+    $name = pathinfo($filename, PATHINFO_FILENAME);
+
+    $map = [
+        'А'=>'A','Б'=>'B','В'=>'V','Г'=>'G','Д'=>'D','Е'=>'E','Ё'=>'E','Ж'=>'Zh','З'=>'Z','И'=>'I','Й'=>'Y',
+        'К'=>'K','Л'=>'L','М'=>'M','Н'=>'N','О'=>'O','П'=>'P','Р'=>'R','С'=>'S','Т'=>'T','У'=>'U','Ф'=>'F',
+        'Х'=>'Kh','Ц'=>'Ts','Ч'=>'Ch','Ш'=>'Sh','Щ'=>'Sch','Ъ'=>'','Ы'=>'Y','Ь'=>'','Э'=>'E','Ю'=>'Yu','Я'=>'Ya',
+        'а'=>'a','б'=>'b','в'=>'v','г'=>'g','д'=>'d','е'=>'e','ё'=>'e','ж'=>'zh','з'=>'z','и'=>'i','й'=>'y',
+        'к'=>'k','л'=>'l','м'=>'m','н'=>'n','о'=>'o','п'=>'p','р'=>'r','с'=>'s','т'=>'t','у'=>'u','ф'=>'f',
+        'х'=>'kh','ц'=>'ts','ч'=>'ch','ш'=>'sh','щ'=>'sch','ъ'=>'','ы'=>'y','ь'=>'','э'=>'e','ю'=>'yu','я'=>'ya',
+    ];
+
+    $name = strtr($name, $map);
+    $name = preg_replace('/[^A-Za-z0-9\-_\.]+/u', '-', $name);
+    $name = preg_replace('/-+/', '-', $name);
+    $name = trim($name, '-_. ');
+
+    if ($name === '') {
+        $name = 'file-' . date('Ymd-His');
+    }
+
+    $ext = strtolower((string) $ext);
+    $ext = preg_replace('/[^a-z0-9]+/', '', $ext);
+
+    return $ext !== '' ? ($name . '.' . $ext) : $name;
+}
+
+function cw_prepare_display_filename(string $filename): string {
+    $filename = trim(wp_basename($filename));
+
+    if ($filename === '') {
+        return 'Файл';
+    }
+
+    $ext  = pathinfo($filename, PATHINFO_EXTENSION);
+    $name = pathinfo($filename, PATHINFO_FILENAME);
+
+    $name = str_replace(["\\", "/", "|"], ' ', (string) $name);
+    $ext  = str_replace(["\\", "/", "|"], '', (string) $ext);
+
+    $name = preg_replace('/[\r\n\t]+/u', ' ', $name);
+    $name = preg_replace('/\s+/u', ' ', $name);
+    $name = trim($name);
+
+    $ext = preg_replace('/[^A-Za-z0-9]+/', '', $ext);
+
+    if ($name === '') {
+        $name = 'Файл';
+    }
+
+    return $ext !== '' ? ($name . '.' . $ext) : $name;
+}
+
+/* ============================================================
+   COMMANDS HELPERS
+============================================================ */
+
+function cw_commands_enabled_office(): bool {
+    return (int) get_option('cw_cmd_office_enabled', 1) === 1;
+}
+
+function cw_commands_enabled_login(): bool {
+    return (int) get_option('cw_cmd_login_enabled', 1) === 1;
+}
+
+function cw_command_label_office(): string {
+    $v = trim((string) get_option('cw_cmd_office_label', '/офис'));
+    return $v !== '' ? $v : '/офис';
+}
+
+function cw_command_label_login(): string {
+    $v = trim((string) get_option('cw_cmd_login_label', '/вход'));
+    return $v !== '' ? $v : '/вход';
+}
+
+function cw_get_transfer_codes(): array {
+    $codes = get_option('cw_transfer_codes', []);
+    return is_array($codes) ? $codes : [];
+}
+
+function cw_save_transfer_codes(array $codes): void {
+    update_option('cw_transfer_codes', $codes, false);
+}
+
+function cw_cleanup_transfer_codes(): void {
+    $codes = cw_get_transfer_codes();
+    if (!$codes) return;
+
+    $now = time();
+    $changed = false;
+
+    foreach ($codes as $code => $data) {
+        $expires = isset($data['expires_at']) ? (int) $data['expires_at'] : 0;
+        if ($expires > 0 && $expires < $now) {
+            unset($codes[$code]);
+            $changed = true;
+        }
+    }
+
+    if ($changed) {
+        cw_save_transfer_codes($codes);
+    }
+}
+
+function cw_generate_transfer_code(): string {
+    cw_cleanup_transfer_codes();
+
+    $codes = cw_get_transfer_codes();
+
+    for ($i = 0; $i < 20; $i++) {
+        $code = (string) random_int(100000, 999999);
+        if (!isset($codes[$code])) {
+            return $code;
+        }
+    }
+
+    return (string) time();
+}
+
+function cw_create_transfer_code_for_dialog(int $dialog_id): array {
+    cw_cleanup_transfer_codes();
+
+    $code  = cw_generate_transfer_code();
+    $codes = cw_get_transfer_codes();
+
+    $codes[$code] = [
+        'dialog_id'  => $dialog_id,
+        'created_at' => time(),
+        'expires_at' => time() + (30 * 60),
+    ];
+
+    cw_save_transfer_codes($codes);
+
+    return [
+        'code'       => $code,
+        'expires_at' => $codes[$code]['expires_at'],
+    ];
+}
+
+function cw_find_transfer_code(string $code): ?array {
+    cw_cleanup_transfer_codes();
+
+    $codes = cw_get_transfer_codes();
+    if (!isset($codes[$code]) || !is_array($codes[$code])) {
+        return null;
+    }
+
+    return $codes[$code];
+}
+
+function cw_delete_transfer_code(string $code): void {
+    $codes = cw_get_transfer_codes();
+    if (isset($codes[$code])) {
+        unset($codes[$code]);
+        cw_save_transfer_codes($codes);
+    }
+}
+
+function cw_mark_user_messages_read_by_operator(int $dialog_id): void {
+    global $wpdb;
+
+    if ($dialog_id <= 0) return;
+
+    $wpdb->query(
+        $wpdb->prepare(
+            "UPDATE {$wpdb->prefix}cw_messages
+             SET unread = 0
+             WHERE dialog_id = %d
+               AND is_operator = 0
+               AND unread = 1",
+            $dialog_id
+        )
+    );
+}
+
+function cw_insert_system_message(int $dialog_id, string $text, int $unread = 1): void {
+    global $wpdb;
+
+    $wpdb->insert($wpdb->prefix . 'cw_messages', [
+        'dialog_id'   => $dialog_id,
+        'message'     => '[system]' . $text,
+        'is_operator' => 1,
+        'unread'      => $unread,
+        'created_at'  => current_time('mysql')
+    ]);
+}
+
+function cw_get_chat_consent_message(): string {
+    return 'Продолжая общение в чате, я принимаю условия <a href="/politika-opd/" target="_blank" rel="noopener noreferrer">политики конфиденциальности</a> и даю <a href="/soglasie-na-obrabotku-personalnyh-dannyh/" target="_blank" rel="noopener noreferrer">согласие</a> на обработку моих персональных данных';
+}
+
+function cw_get_first_reply_waiting_message(): string {
+    return 'Ваше сообщение отправлено! Ожидается подключение оператора. ~ 1-3 мин.';
+}
+
+function cw_try_handle_chat_command(
+    int $current_dialog_id,
+    string $client_key,
+    string $message,
+    bool $is_operator,
+    string $dialog_status
+) {
+    if ($is_operator) return null;
+
+    $message = trim($message);
+    if ($message === '') return null;
+
+    $office_cmd = cw_command_label_office();
+    $login_cmd  = cw_command_label_login();
+
+    if (cw_commands_enabled_office() && mb_strtolower($message) === mb_strtolower($office_cmd)) {
+        if ($dialog_status === 'closed') {
+            return ['status' => 'ok'];
+        }
+
+        $created = cw_create_transfer_code_for_dialog($current_dialog_id);
+        $code    = $created['code'];
+
+        cw_insert_system_message(
+            $current_dialog_id,
+            'Код доступа для сотрудника: ' . $code . '. Срок действия: 30 минут.'
+        );
+
+        return ['status' => 'ok', 'command' => 'office', 'code' => $code];
+    }
+
+    if (cw_commands_enabled_login()) {
+        $pattern = '/^' . preg_quote($login_cmd, '/') . '\s+(\d{4,10})$/ui';
+        if (preg_match($pattern, $message, $m)) {
+            $code = trim((string) ($m[1] ?? ''));
+            $data = cw_find_transfer_code($code);
+
+            if (!$data) {
+                cw_insert_system_message($current_dialog_id, 'Код не найден или срок его действия истёк.');
+                return ['status' => 'ok', 'command' => 'login_invalid'];
+            }
+
+            $target_dialog_id = (int) ($data['dialog_id'] ?? 0);
+            if ($target_dialog_id <= 0) {
+                cw_delete_transfer_code($code);
+                cw_insert_system_message($current_dialog_id, 'Целевой диалог не найден.');
+                return ['status' => 'ok', 'command' => 'login_invalid_target'];
+            }
+
+            cw_delete_transfer_code($code);
+
+            if ($client_key !== '') {
+                cw_grant_employee_dialog_access($client_key, $target_dialog_id, 60 * 60);
+            }
+
+            cw_insert_system_message(
+                $target_dialog_id,
+                'Сотрудник вошёл в диалог.'
+            );
+
+            return [
+                'status'        => 'ok',
+                'command'       => 'login_success',
+                'switch_dialog' => $target_dialog_id,
+            ];
+        }
+    }
+
+    return null;
+}
+
+/* ============================================================
+   DIALOGS
+============================================================ */
+
+function cw_rest_dialogs(WP_REST_Request $r) {
+    global $wpdb;
+
+    $D = $wpdb->prefix . 'cw_dialogs';
+    $M = $wpdb->prefix . 'cw_messages';
+
+    if ($r->get_method() === 'POST') {
+        $client_key  = cw_get_client_key_from_request($r);
+        $ip          = cw_get_real_ip();
+        $client_info = cw_client_info_from_request($r);
+        $ua          = $client_info['ua'] ?: ($_SERVER['HTTP_USER_AGENT'] ?? '');
+        $ua          = sanitize_text_field($ua);
+
+        $browser_label = cw_format_browser_label($ua, $client_info);
+
+        $wpdb->insert($D, [
+            'status'      => 'open',
+            'client_key'  => $client_key,
+            'geo_country' => '',
+            'geo_city'    => '',
+            'geo_region'  => '',
+            'geo_org'     => '',
+            'geo_ip'      => $ip,
+            'geo_browser' => $browser_label,
+            'created_at'  => current_time('mysql')
+        ]);
+
+        $dialog_id = (int) $wpdb->insert_id;
+
+        return ['id' => $dialog_id];
+    }
+
     return $wpdb->get_results("
         SELECT d.*,
-        (
-            SELECT COUNT(*) FROM {$M} m
-            WHERE m.dialog_id = d.id
-            AND m.is_operator = 0
-            AND m.unread = 1
-        ) AS unread
+        (SELECT COUNT(*) FROM {$M} m
+            WHERE m.dialog_id=d.id
+              AND m.unread=1
+              AND m.is_operator=0
+        ) as unread
         FROM {$D} d
         ORDER BY d.id DESC
     ");
 }
 
 /* ============================================================
-   СООБЩЕНИЯ
+   GEO
 ============================================================ */
+
+function cw_rest_geo(WP_REST_Request $r) {
+    global $wpdb;
+
+    $id = intval($r['id']);
+    $D  = $wpdb->prefix . 'cw_dialogs';
+
+    $guard = cw_require_dialog_access_or_403($r, $id);
+    if ($guard !== true) return $guard;
+
+    cw_ensure_dialog_geo_loaded($id);
+
+    $row = $wpdb->get_row(
+        $wpdb->prepare(
+            "SELECT geo_country, geo_city, geo_region, geo_org, geo_ip, geo_browser
+             FROM {$D} WHERE id=%d",
+            $id
+        ),
+        ARRAY_A
+    );
+
+    if (!$row) {
+        return new WP_REST_Response(['error' => 'dialog_not_found'], 404);
+    }
+
+    return [
+        'geo_country' => $row['geo_country'] ?? '',
+        'geo_city'    => $row['geo_city'] ?? '',
+        'geo_region'  => $row['geo_region'] ?? '',
+        'geo_org'     => $row['geo_org'] ?? '',
+        'geo_ip'      => $row['geo_ip'] ?? '',
+        'geo_browser' => $row['geo_browser'] ?? '',
+    ];
+}
+
+/* ============================================================
+   MESSAGES
+============================================================ */
+
 function cw_rest_messages(WP_REST_Request $r) {
     global $wpdb;
 
     $id = intval($r['id']);
-    $D = $wpdb->prefix . "cw_dialogs";
-    $M = $wpdb->prefix . "cw_messages";
+    $D  = $wpdb->prefix . 'cw_dialogs';
+    $M  = $wpdb->prefix . 'cw_messages';
 
-    // используем prepare
-    $status = $wpdb->get_var( $wpdb->prepare( "SELECT status FROM {$D} WHERE id=%d", $id ) );
+    $guard = cw_require_dialog_access_or_403($r, $id);
+    if ($guard !== true) return $guard;
 
-    /* ---- GET ---- */
-    if ($r->get_method() === "GET") {
+    $status = (string) $wpdb->get_var(
+        $wpdb->prepare("SELECT status FROM {$D} WHERE id=%d", $id)
+    );
 
-        // возвращаем историю — используем prepare
-        $msgs = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$M} WHERE dialog_id=%d ORDER BY id ASC", $id ) );
+    if ($r->get_method() === 'GET') {
+        $msgs = $wpdb->get_results(
+            $wpdb->prepare("SELECT * FROM {$M} WHERE dialog_id=%d ORDER BY id ASC", $id)
+        );
 
         $res = new WP_REST_Response($msgs);
-        $res->header("X-Dialog-Status", $status);
+        $res->header('X-Dialog-Status', $status);
         return $res;
     }
 
-    /* ---- POST ---- */
-    // Если диалог закрыт — запрет для клиентов (non-operator)
-    $isOp = intval($r->get_param("operator"));
+    $isOp = intval($r->get_param('operator'));
 
-    // Проверяем header nonce для возможности авторизации через REST
-    $nonce = $r->get_header('X-WP-Nonce') ?: $r->get_header('X_WP_Nonce');
-
-    // Если кто-то пытается выставить operator=1 — разрешаем только admin / валидный nonce
-    if ($isOp) {
-        if ( ! current_user_can('manage_options') ) {
-            if ( ! $nonce || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
-                return new WP_REST_Response(['error' => 'permission_denied'], 403);
-            }
-        }
+    if ($isOp && !current_user_can('manage_options')) {
+        return new WP_REST_Response(['error' => 'permission_denied'], 403);
     }
 
     if ($status === 'closed' && !$isOp) {
         return new WP_REST_Response(['error' => 'dialog_closed'], 403);
     }
 
-    // Ограничим длину входящего сообщения
-    $raw_msg = $r->get_param("message");
+    if (!empty($_FILES['file']) && isset($_FILES['file']['tmp_name']) && is_uploaded_file($_FILES['file']['tmp_name'])) {
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+
+        $file = $_FILES['file'];
+        $maxSize = 20 * 1024 * 1024;
+
+        if (!empty($file['size']) && intval($file['size']) > $maxSize) {
+            return new WP_REST_Response(['error' => 'file_too_large'], 400);
+        }
+
+        $display_name   = cw_prepare_display_filename((string) ($file['name'] ?? ''));
+        $converted_name = cw_transliterate_filename((string) ($file['name'] ?? ''));
+        $file['name']   = $converted_name;
+
+        $overrides = [
+            'test_form' => false,
+            'mimes' => [
+                'jpg|jpeg|jpe' => 'image/jpeg',
+                'png'          => 'image/png',
+                'gif'          => 'image/gif',
+                'webp'         => 'image/webp',
+                'pdf'          => 'application/pdf',
+                'doc'          => 'application/msword',
+                'docx'         => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'xls'          => 'application/vnd.ms-excel',
+                'xlsx'         => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'txt'          => 'text/plain',
+                'zip'          => 'application/zip',
+                'rar'          => 'application/x-rar-compressed',
+            ],
+        ];
+
+        add_filter('upload_dir', 'cw_chat_widget_upload_dir');
+        $uploaded = wp_handle_upload($file, $overrides);
+        remove_filter('upload_dir', 'cw_chat_widget_upload_dir');
+
+        if (!is_array($uploaded) || !empty($uploaded['error'])) {
+            $err = is_array($uploaded) ? ($uploaded['error'] ?? 'upload_error') : 'upload_error';
+            return new WP_REST_Response(['error' => 'upload_failed', 'details' => $err], 400);
+        }
+
+        $url  = esc_url_raw($uploaded['url'] ?? '');
+        $type = sanitize_text_field($uploaded['type'] ?? '');
+        $name = $display_name ?: cw_prepare_display_filename(basename($uploaded['file'] ?? ''));
+
+        if (!$url) {
+            return new WP_REST_Response(['error' => 'upload_failed_no_url'], 400);
+        }
+
+        $msg = (strpos($type, 'image/') === 0)
+            ? '[image]' . $url
+            : '[file]' . $url . '|' . $name;
+
+        $has_user_messages = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(*) FROM {$M} WHERE dialog_id=%d AND is_operator=0",
+                $id
+            )
+        );
+
+        if ($isOp) {
+            cw_mark_user_messages_read_by_operator($id);
+        }
+
+        if (!$isOp && $has_user_messages === 0) {
+            cw_insert_system_message($id, cw_get_chat_consent_message());
+        }
+
+        $wpdb->insert($M, [
+            'dialog_id'   => $id,
+            'message'     => $msg,
+            'is_operator' => $isOp,
+            'unread'      => 1,
+            'created_at'  => current_time('mysql')
+        ]);
+
+        $new_message_id = (int) $wpdb->insert_id;
+
+        if (!$isOp && $has_user_messages === 0) {
+            cw_insert_system_message($id, cw_get_first_reply_waiting_message());
+        }
+
+        if (!$isOp && $new_message_id > 0) {
+            if (function_exists('cw_tg_dispatch_message_notification_async')) {
+                cw_tg_dispatch_message_notification_async($new_message_id);
+            } elseif (function_exists('cw_tg_queue_message_notification')) {
+                cw_tg_queue_message_notification($new_message_id);
+            }
+
+            if (function_exists('cw_max_dispatch_message_notification_async')) {
+                cw_max_dispatch_message_notification_async($new_message_id);
+            } elseif (function_exists('cw_max_queue_message_notification')) {
+                cw_max_queue_message_notification($new_message_id);
+            }
+        }
+
+        return ['status' => 'ok'];
+    }
+
+    $raw_msg = $r->get_param('message');
     if (!is_string($raw_msg)) $raw_msg = '';
-    $msg = sanitize_text_field( mb_substr($raw_msg, 0, 2000) );
+
+    $msg = sanitize_text_field(mb_substr(trim($raw_msg), 0, 2000));
+    if ($msg === '') {
+        return new WP_REST_Response(['error' => 'empty_message'], 400);
+    }
+
+    $has_user_messages = (int) $wpdb->get_var(
+        $wpdb->prepare(
+            "SELECT COUNT(*) FROM {$M} WHERE dialog_id=%d AND is_operator=0",
+            $id
+        )
+    );
+
+    $client_key = cw_get_client_key_from_request($r);
+
+    $command_result = cw_try_handle_chat_command(
+        $id,
+        $client_key,
+        $msg,
+        (bool) $isOp,
+        $status
+    );
+
+    if (is_array($command_result)) {
+        return $command_result;
+    }
+
+    if ($isOp) {
+        cw_mark_user_messages_read_by_operator($id);
+    }
+
+    if (!$isOp && $has_user_messages === 0) {
+        cw_insert_system_message($id, cw_get_chat_consent_message());
+    }
 
     $wpdb->insert($M, [
-        'dialog_id' => $id,
-        'message' => $msg,
+        'dialog_id'   => $id,
+        'message'     => $msg,
         'is_operator' => $isOp,
-        'unread' => $isOp ? 0 : 1,
-        'created_at' => current_time('mysql')
+        'unread'      => 1,
+        'created_at'  => current_time('mysql')
     ]);
 
-    // Telegram уведомление — только для клиентских сообщений
-    if (!$isOp) {
-        if (function_exists('cw_tg_notify_operator')) {
-            cw_tg_notify_operator($id, $msg);
+    $new_message_id = (int) $wpdb->insert_id;
+
+    if (!$isOp && $has_user_messages === 0) {
+        cw_insert_system_message($id, cw_get_first_reply_waiting_message());
+    }
+
+    if (!$isOp && $new_message_id > 0) {
+        if (function_exists('cw_tg_dispatch_message_notification_async')) {
+            cw_tg_dispatch_message_notification_async($new_message_id);
+        } elseif (function_exists('cw_tg_queue_message_notification')) {
+            cw_tg_queue_message_notification($new_message_id);
+        }
+
+        if (function_exists('cw_max_dispatch_message_notification_async')) {
+            cw_max_dispatch_message_notification_async($new_message_id);
+        } elseif (function_exists('cw_max_queue_message_notification')) {
+            cw_max_queue_message_notification($new_message_id);
         }
     }
 
@@ -354,92 +999,82 @@ function cw_rest_messages(WP_REST_Request $r) {
 }
 
 /* ============================================================
-   ЗАКРЫТЬ ДИАЛОГ
+   CLOSE
 ============================================================ */
+
 function cw_rest_close(WP_REST_Request $r) {
     global $wpdb;
+
     $id = intval($r['id']);
-    $D = $wpdb->prefix . "cw_dialogs";
-    $M = $wpdb->prefix . "cw_messages";
 
-    // только админ может закрыть диалог
-    $nonce = $r->get_header('X-WP-Nonce') ?: $r->get_header('X_WP_Nonce');
-    if ( ! current_user_can('manage_options') ) {
-        if ( ! $nonce || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
-            return new WP_REST_Response(['error' => 'permission_denied'], 403);
-        }
-    }
+    cw_mark_user_messages_read_by_operator($id);
 
-    $wpdb->update($D, ['status' => 'closed'], ['id'=>$id]);
+    $wpdb->update(
+        $wpdb->prefix . 'cw_dialogs',
+        ['status' => 'closed'],
+        ['id' => $id]
+    );
 
-    $wpdb->insert($M, [
-        'dialog_id' => $id,
-        'message' => '[system]Диалог закрыт оператором.',
+    $wpdb->insert($wpdb->prefix . 'cw_messages', [
+        'dialog_id'   => $id,
+        'message'     => '[system]Диалог закрыт оператором.',
         'is_operator' => 1,
-        'unread' => 1,
-        'created_at' => current_time('mysql')
+        'unread'      => 1,
+        'created_at'  => current_time('mysql')
     ]);
 
     return ['status' => 'closed'];
 }
 
 /* ============================================================
-   УДАЛИТЬ ДИАЛОГ
+   DELETE
 ============================================================ */
+
 function cw_rest_delete(WP_REST_Request $r) {
     global $wpdb;
+
     $id = intval($r['id']);
 
-    // только админ
-    $nonce = $r->get_header('X-WP-Nonce') ?: $r->get_header('X_WP_Nonce');
-    if ( ! current_user_can('manage_options') ) {
-        if ( ! $nonce || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
-            return new WP_REST_Response(['error' => 'permission_denied'], 403);
-        }
-    }
-
-    $wpdb->delete($wpdb->prefix . "cw_messages", ['dialog_id' => $id]);
-    $wpdb->delete($wpdb->prefix . "cw_dialogs", ['id' => $id]);
+    $wpdb->delete($wpdb->prefix . 'cw_messages', ['dialog_id' => $id]);
+    $wpdb->delete($wpdb->prefix . 'cw_dialogs', ['id' => $id]);
 
     return ['status' => 'deleted'];
 }
 
 /* ============================================================
-   ПОМЕТИТЬ ПРОЧИТАННЫМИ
+   READ
 ============================================================ */
+
 function cw_rest_read(WP_REST_Request $r) {
     global $wpdb;
-    $id = intval($r['id']);
 
-    // Только оператор/админ может пометить прочитанным
-    $nonce = $r->get_header('X-WP-Nonce') ?: $r->get_header('X_WP_Nonce');
-    if ( ! current_user_can('manage_options') ) {
-        if ( ! $nonce || ! wp_verify_nonce( $nonce, 'wp_rest' ) ) {
-            return new WP_REST_Response(['error' => 'permission_denied'], 403);
-        }
-    }
+    $id = intval($r['id']);
+    $guard = cw_require_dialog_access_or_403($r, $id);
+    if ($guard !== true) return $guard;
+
+    $last_id = intval($r->get_param('last_read_message_id'));
+    if ($last_id <= 0) return ['status' => 'ok'];
+
+    $isAdmin = current_user_can('manage_options');
+    $target_is_operator = $isAdmin ? 0 : 1;
 
     $wpdb->query(
         $wpdb->prepare(
-            "UPDATE {$wpdb->prefix}cw_messages SET unread=0 WHERE dialog_id=%d AND is_operator=0",
-            $id
+            "UPDATE {$wpdb->prefix}cw_messages
+             SET unread=0
+             WHERE dialog_id=%d
+               AND id<=%d
+               AND is_operator=%d
+               AND unread=1",
+            $id,
+            $last_id,
+            $target_is_operator
         )
     );
 
-    return ['status' => 'read'];
-}
+    if (!$isAdmin && $target_is_operator === 1 && function_exists('cw_max_mark_reply_receipts_read_up_to')) {
+        cw_max_mark_reply_receipts_read_up_to($id, $last_id);
+    }
 
-/* ============================================================
-   GEO (возвращает одну запись geo)
-============================================================ */
-function cw_rest_geo(WP_REST_Request $r) {
-    global $wpdb;
-    $id = intval($r['id']);
-
-    return $wpdb->get_row(
-        $wpdb->prepare(
-            "SELECT geo_country, geo_city, geo_region, geo_ip, geo_browser FROM {$wpdb->prefix}cw_dialogs WHERE id=%d",
-            $id
-        )
-    );
+    return ['status' => 'ok'];
 }

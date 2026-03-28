@@ -1,259 +1,701 @@
-/* ============================================
-   ЛЕВАЯ КОЛОНКА — СПИСОК ДИАЛОГОВ
-============================================ */
+.wrap {
+    margin-top: 16px;
+}
+
+.wrap h1 {
+    margin: 0 0 18px;
+    font-size: 28px;
+    line-height: 1.2;
+    font-weight: 700;
+    color: #1f2430;
+}
+
 #cw-admin-wrapper {
     display: flex;
-    gap: 25px;
-    margin-top: 20px;
+    gap: 24px;
+    margin-top: 0;
+    align-items: stretch;
 }
+
+/* =========================================
+   LEFT COLUMN
+========================================= */
 
 .cw-column-left {
-    width: 260px;
-    min-height: 600px;
+    width: 320px;
+    flex: 0 0 320px;
     background: #ffffff;
-    border: 1px solid #dcdcdc;
-    border-radius: 6px;
-    padding: 10px;
+    border-radius: 22px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    height: min(800px, calc(100vh - 170px));
+    min-height: 680px;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.10);
+}
+
+.cw-left-header {
+    padding: 16px 18px;
+    background: linear-gradient(135deg, #ffb300 0%, #ff9800 100%);
+    color: #ffffff;
+    font-size: 15px;
+    font-weight: 700;
+    border-bottom: none;
+}
+
+#cw-dialogs-list {
+    padding: 12px 10px;
     overflow-y: auto;
+    overflow-x: hidden;
+    flex: 1;
+    background: #f6f7fb;
 }
 
-.cw-dialog-item {
-    padding: 10px;
-    margin-bottom: 8px;
-    background: #f5f5f5;
-    border-radius: 6px;
+#cw-dialogs-list::-webkit-scrollbar,
+#cw-messages-box::-webkit-scrollbar,
+#cw-geo-box .cw-geo-main-line::-webkit-scrollbar,
+#cw-geo-box .cw-geo-provider-line::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+#cw-dialogs-list::-webkit-scrollbar-thumb,
+#cw-messages-box::-webkit-scrollbar-thumb,
+#cw-geo-box .cw-geo-main-line::-webkit-scrollbar-thumb,
+#cw-geo-box .cw-geo-provider-line::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.14);
+    border-radius: 999px;
+}
+
+#cw-dialogs-list::-webkit-scrollbar-track,
+#cw-messages-box::-webkit-scrollbar-track,
+#cw-geo-box .cw-geo-main-line::-webkit-scrollbar-track,
+#cw-geo-box .cw-geo-provider-line::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.cw-dialog {
+    width: calc(100% - 18px);
+    box-sizing: border-box;
+    padding: 13px 14px;
+    margin: 0 auto 12px;
+    background: #ffffff;
+    border-radius: 16px;
     cursor: pointer;
-    border: 1px solid #e3e3e3;
-    transition: 0.2s;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.04);
+    color: #252525;
 }
 
-.cw-dialog-item:hover {
-    background: #ececec;
+.cw-dialog:last-child {
+    margin-bottom: 0;
 }
 
-.cw-dialog-item.active {
-    background: #cfe7ff;
-    border-color: #7bb4ff;
+.cw-dialog:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.08);
+    border-color: rgba(255, 152, 0, 0.25);
+}
+
+.cw-dialog.active {
+    background: #fff7e8;
+    border-color: rgba(255, 152, 0, 0.40);
+    box-shadow: 0 10px 24px rgba(255, 152, 0, 0.14);
+}
+
+.cw-dialog strong {
+    font-size: 14px;
+    font-weight: 700;
+    color: #1f2430;
+}
+
+.cw-status {
+    font-size: 12px;
+    margin-top: 6px;
+    color: #666;
+}
+
+.cw-status > span,
+.cw-status-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.cw-status-open {
+    background: #e8f5e9;
+    color: #2e7d32;
+}
+
+.cw-status-closed {
+    background: #fdecec;
+    color: #c62828;
+}
+
+.cw-status-other {
+    background: #eef2f7;
+    color: #54606e;
 }
 
 .cw-unread {
-    color: #d40000;
-    font-weight: bold;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 22px;
+    margin-left: 6px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: #f44336;
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 11px;
+    line-height: 1;
+    vertical-align: middle;
 }
 
+/* =========================================
+   RIGHT COLUMN
+========================================= */
 
-/* ============================================
-   ПРАВАЯ КОЛОНКА — ГЕО + МЕССЕДЖИ
-============================================ */
 .cw-column-right {
     flex: 1;
-    background: #fff;
-    border: 1px solid #dcdcdc;
-    border-radius: 6px;
+    min-width: 0;
+    background: #ffffff;
+    border-radius: 22px;
     display: flex;
     flex-direction: column;
-    height: 800px;
+    height: min(800px, calc(100vh - 170px));
+    min-height: 680px;
+    overflow: hidden;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.10);
 }
 
-/* GEO block */
+/* =========================================
+   GEO BOX
+========================================= */
+
 #cw-geo-box {
-    padding: 15px;
-    border-bottom: 1px solid #e2e2e2;
-    font-size: 14px;
-    background: #fafafa;
-    min-height: 90px;
+    padding: 14px 16px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    font-size: 13px;
+    background: #fffaf0;
+    line-height: 1.45;
+    color: #4b4b4b;
+    overflow-x: hidden;
 }
 
-/* MESSAGES */
+#cw-geo-box .cw-geo-main-line,
+#cw-geo-box .cw-geo-provider-line {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    white-space: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 2px;
+    margin-bottom: 4px;
+    scrollbar-width: thin;
+}
+
+#cw-geo-box .cw-geo-main-line strong,
+#cw-geo-box .cw-geo-main-line span,
+#cw-geo-box .cw-geo-provider-line span {
+    flex: 0 0 auto;
+}
+
+#cw-geo-box strong {
+    color: #8a4b00;
+}
+
+/* =========================================
+   MESSAGES
+========================================= */
+
 #cw-messages-box {
     flex: 1;
-    padding: 15px;
+    padding: 14px 12px;
     overflow-y: auto;
-    background: #ffffff;
+    overflow-x: hidden;
+    background: #f6f7fb;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    scroll-behavior: smooth;
 }
 
 .cw-empty {
     text-align: center;
-    color: #777;
-    margin-top: 40px;
+    color: #7c8190;
+    margin: auto 0;
+    font-size: 14px;
 }
 
-/* MESSAGE DESIGN */
 .cw-msg {
-    max-width: 70%;
-    padding: 10px 14px;
-    margin-bottom: 12px;
-    border-radius: 10px;
+    width: fit-content;
+    max-width: 82%;
+    box-sizing: border-box;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+    border-radius: 18px;
+    padding: 10px 12px 8px;
     position: relative;
 }
 
 .cw-msg-user {
-    background: #eaeaea;
-    margin-right: auto;
+    background: #ffffff;
+    color: #252525;
+    align-self: flex-start;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    border-bottom-left-radius: 6px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.06);
 }
 
 .cw-msg-op {
-    background: #d5ffd0;
-    margin-left: auto;
+    background: linear-gradient(135deg, #ffb300 0%, #ff9800 100%);
+    color: #ffffff;
+    align-self: flex-end;
+    border-bottom-right-radius: 6px;
+    box-shadow: 0 6px 18px rgba(255, 152, 0, 0.18);
+}
+
+.cw-msg-system {
+    width: auto;
+    max-width: 100%;
+    align-self: center;
+    background: #fffaf0;
+    color: #5d4a18;
+    border: 2px solid #f0b400;
+    border-radius: 16px;
+    box-shadow: none;
+    padding: 10px 14px;
+    text-align: center;
+}
+
+.cw-msg-content {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 14px;
+    line-height: 1.45;
+}
+
+.cw-msg-meta {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-top: 6px;
+    min-height: 14px;
+    font-size: 11px;
+    line-height: 1;
+    opacity: 0.92;
+}
+
+.cw-msg-user .cw-msg-meta {
+    color: #7a7a7a;
+}
+
+.cw-msg-op .cw-msg-meta {
+    color: rgba(255, 255, 255, 0.92);
 }
 
 .cw-msg-time {
-    font-size: 11px;
-    color: #777;
-    margin-top: 4px;
+    white-space: nowrap;
+    line-height: 1;
 }
 
+.cw-msg-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    user-select: none;
+}
 
-/* ============================================
-   INPUT PANEL (НИЖНЯЯ ПАНЕЛЬ)
-============================================ */
+.cw-msg-status.is-sent {
+    color: inherit;
+    opacity: 0.82;
+}
+
+.cw-msg-status.is-read {
+    color: inherit;
+    opacity: 1;
+}
+
+.cw-status-operator,
+.cw-status-user {
+    opacity: 1;
+}
+
+.cw-msg-system .cw-msg-meta,
+.cw-msg-system .cw-msg-time,
+.cw-msg-system .cw-msg-status {
+    display: none;
+}
+
+/* =========================================
+   LINKS / FILES / IMAGES
+========================================= */
+
+.cw-msg a {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    transition: color 0.2s ease, text-decoration-color 0.2s ease;
+}
+
+.cw-msg-user a {
+    color: #8a4b00;
+    font-weight: 700;
+}
+
+.cw-msg-user a:hover {
+    color: #5f3400;
+    text-decoration: none;
+}
+
+.cw-msg-op a {
+    color: #ffffff;
+    font-weight: 700;
+    text-decoration-color: rgba(255, 255, 255, 0.85);
+}
+
+.cw-msg-op a:hover {
+    color: #fffaf0;
+    text-decoration: none;
+}
+
+.cw-msg a .cw-link-qr-icon {
+    color: currentColor;
+    flex: 0 0 auto;
+}
+
+.cw-msg-file .cw-msg-content {
+    white-space: normal;
+}
+
+.cw-file-link {
+    display: inline-flex;
+    align-items: flex-start;
+    gap: 8px;
+    max-width: 100%;
+    text-decoration: none !important;
+    line-height: 1.4;
+}
+
+.cw-file-link:hover {
+    text-decoration: none !important;
+}
+
+.cw-file-icon {
+    flex: 0 0 auto;
+    margin-top: 1px;
+}
+
+.cw-file-name {
+    display: inline;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+.cw-msg-user .cw-file-link {
+    color: #8a4b00;
+    font-weight: 700;
+}
+
+.cw-msg-op .cw-file-link {
+    color: #ffffff;
+    font-weight: 700;
+}
+
+.cw-msg-user .cw-file-link:hover .cw-file-name,
+.cw-msg-op .cw-file-link:hover .cw-file-name {
+    text-decoration: none;
+}
+
+#cw-messages-box img {
+    height: auto !important;
+    max-height: none !important;
+}
+
+.cw-msg-image {
+    display: block;
+    max-width: 320px;
+    height: auto !important;
+    border-radius: 12px;
+    cursor: zoom-in;
+    background: #ffffff;
+}
+
+/* =========================================
+   DATE DIVIDER
+========================================= */
+
+.cw-date-divider {
+    position: relative;
+    text-align: center;
+    margin: 14px 0 2px;
+}
+
+.cw-date-divider:before,
+.cw-date-divider:after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    width: calc(50% - 62px);
+    height: 1px;
+    background: #e5e7ef;
+}
+
+.cw-date-divider:before {
+    left: 0;
+}
+
+.cw-date-divider:after {
+    right: 0;
+}
+
+.cw-date-divider span {
+    background: #ffffff;
+    padding: 4px 14px;
+    font-size: 12px;
+    color: #777;
+    border-radius: 14px;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    position: relative;
+    z-index: 1;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+/* =========================================
+   INPUT PANEL
+========================================= */
+
 .cw-input-panel {
     display: flex;
     gap: 10px;
     padding: 12px;
-    border-top: 1px solid #dcdcdc;
-    background: #fafafa;
+    border-top: 1px solid rgba(0, 0, 0, 0.06);
+    background: #ffffff;
+    align-items: center;
+    flex-wrap: wrap;
 }
 
 #cw-send-input {
     flex: 1;
-    padding: 10px 12px;
-    border-radius: 6px;
-    border: 1px solid #bfbfbf;
+    min-width: 220px;
+    height: 46px;
+    padding: 0 14px;
+    border-radius: 14px;
+    border: 1px solid rgba(0, 0, 0, 0.10);
     font-size: 14px;
+    background: #f6f7fb;
+    color: #252525;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+#cw-send-input::placeholder {
+    color: #8a90a0;
+    opacity: 1;
+}
+
+#cw-send-input:focus {
+    outline: none;
+    border-color: rgba(255, 152, 0, 0.45);
+    box-shadow: 0 0 0 3px rgba(255, 152, 0, 0.12);
+    background: #ffffff;
+}
+
+#cw-send-input:disabled {
+    background: #f0f1f5;
+    color: #8e93a3;
+    cursor: not-allowed;
 }
 
 #cw-send-btn,
+#cw-file-btn,
 #cw-close-btn,
 #cw-delete-btn {
-    padding: 8px 14px;
-    border-radius: 6px;
-    cursor: pointer;
+    height: 46px !important;
+    min-height: 46px;
+    border-radius: 14px !important;
+    padding: 0 16px !important;
+    border: none !important;
+    box-shadow: none !important;
+    font-weight: 600;
+    transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease, background 0.18s ease;
+}
+
+#cw-send-btn:hover,
+#cw-file-btn:hover,
+#cw-close-btn:hover,
+#cw-delete-btn:hover {
+    transform: translateY(-1px);
 }
 
 #cw-send-btn {
-    background: #2d89ff;
-    color: white;
-    border: none;
+    background: linear-gradient(135deg, #ffb300 0%, #ff8f00 100%) !important;
+    color: #ffffff !important;
+    box-shadow: 0 10px 24px rgba(255, 152, 0, 0.24) !important;
 }
 
 #cw-send-btn:hover {
-    background: #1d6fe0;
+    box-shadow: 0 14px 28px rgba(255, 152, 0, 0.28) !important;
 }
 
-#cw-close-btn {
-    background: #ffb31a;
-    color: white;
-    border: none;
-}
-
-#cw-close-btn:hover {
-    background: #e69c0a;
-}
-
+#cw-file-btn,
+#cw-close-btn,
 #cw-delete-btn {
-    background: #ff5c5c;
-    color: white;
-    border: none;
+    background: #f6f7fb !important;
+    color: #2f3441 !important;
+    border: 1px solid rgba(0, 0, 0, 0.06) !important;
 }
 
+#cw-file-btn:hover,
+#cw-close-btn:hover,
 #cw-delete-btn:hover {
-    background: #e64444;
+    background: #eceff5 !important;
 }
 
-
-/* ============================================
-   СКРОЛЛ
-============================================ */
-#cw-messages-box::-webkit-scrollbar,
-.cw-column-left::-webkit-scrollbar {
-    width: 8px;
+#cw-file-btn {
+    min-width: 46px;
+    padding: 0 !important;
+    font-size: 18px;
 }
 
-#cw-messages-box::-webkit-scrollbar-thumb,
-.cw-column-left::-webkit-scrollbar-thumb {
-    background: #bcbcbc;
-    border-radius: 4px;
+#cw-close-btn:disabled,
+#cw-send-btn:disabled,
+#cw-file-btn:disabled,
+#cw-delete-btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none !important;
 }
 
-/* ============================================
-   АДАПТИВНОСТЬ
-============================================ */
+/* =========================================
+   LIGHTBOX
+========================================= */
+
+#cw-admin-lightbox {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.88);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 99999999;
+    cursor: zoom-out;
+    backdrop-filter: blur(2px);
+}
+
+#cw-admin-lightbox img {
+    max-width: 92vw;
+    max-height: 92vh;
+    border-radius: 18px;
+    box-shadow: 0 25px 70px rgba(0, 0, 0, 0.65);
+    background: #ffffff;
+}
+
+/* =========================================
+   RESPONSIVE
+========================================= */
+
 @media (max-width: 1200px) {
+    .cw-column-left {
+        width: 280px;
+        flex: 0 0 280px;
+    }
+}
+
+@media (max-width: 1100px) {
+    #cw-admin-wrapper {
+        gap: 16px;
+    }
+
+    .cw-column-left,
+    .cw-column-right {
+        height: min(760px, calc(100vh - 170px));
+    }
+
+    .cw-msg {
+        max-width: 86%;
+    }
+}
+
+@media (max-width: 900px) {
     #cw-admin-wrapper {
         flex-direction: column;
     }
 
-    .cw-column-left {
+    .cw-column-left,
+    .cw-column-right {
         width: 100%;
-        height: 250px;
+        flex: 1 1 auto;
+        height: auto;
+        min-height: 320px;
+    }
+
+    .cw-column-left {
+        max-height: 340px;
     }
 
     .cw-column-right {
-        height: 600px;
+        min-height: 620px;
+    }
+
+    .cw-msg {
+        max-width: 90%;
     }
 }
 
-/* ============================================
-   КНОПКА "Запросить данные" (Admin)
-============================================ */
-#cw-admin-wrapper .cw-input-panel #cw-request-btn {
-    display: inline-block;
-    margin-left: 8px;
-    padding: 8px 12px;
-    font-size: 13px;
-    line-height: 1;
-    color: #ffffff;
-    background: linear-gradient(180deg, #2b8ad6 0%, #2573bf 100%);
-    border: 1px solid rgba(0,0,0,0.08);
-    border-radius: 6px;
-    box-shadow: 0 2px 0 rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.06);
-    cursor: pointer;
-    transition: transform .08s ease, box-shadow .12s ease, opacity .12s ease;
-    text-decoration: none;
-    vertical-align: middle;
-}
+@media (max-width: 640px) {
+    .wrap h1 {
+        font-size: 24px;
+    }
 
-/* Hover / Focus */
-#cw-admin-wrapper .cw-input-panel #cw-request-btn:hover,
-#cw-admin-wrapper .cw-input-panel #cw-request-btn:focus {
-    background: linear-gradient(180deg, #2988d6 0%, #1f6fb2 100%);
-    box-shadow: 0 6px 18px rgba(0,0,0,0.12);
-    transform: translateY(-1px);
-    outline: none;
-}
-
-/* Active */
-#cw-admin-wrapper .cw-input-panel #cw-request-btn:active {
-    transform: translateY(0);
-    box-shadow: 0 3px 8px rgba(0,0,0,0.08);
-}
-
-/* Disabled */
-#cw-admin-wrapper .cw-input-panel #cw-request-btn[disabled],
-#cw-admin-wrapper .cw-input-panel #cw-request-btn.disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-    box-shadow: none;
-}
-
-/* Маленькая иконка слева (опционально) */
-#cw-admin-wrapper .cw-input-panel #cw-request-btn .cw-btn-icon {
-    margin-right: 6px;
-    vertical-align: middle;
-}
-
-/* Адаптивность: на узких экранах кнопка занимает строку */
-@media (max-width: 800px) {
-    #cw-admin-wrapper .cw-input-panel {
-        flex-wrap: wrap;
+    .cw-input-panel {
         gap: 8px;
-        align-items: center;
     }
 
-    #cw-admin-wrapper .cw-input-panel #cw-request-btn {
-        margin-left: 0;
-        width: 100%;
-        text-align: center;
+    #cw-send-input {
+        min-width: 100%;
+        order: 1;
+    }
+
+    #cw-send-btn,
+    #cw-file-btn,
+    #cw-close-btn,
+    #cw-delete-btn {
+        flex: 1 1 calc(50% - 4px);
+    }
+
+    .cw-msg {
+        max-width: 94%;
+    }
+
+    #cw-geo-box .cw-geo-main-line,
+    #cw-geo-box .cw-geo-provider-line {
+        gap: 10px;
+    }
+
+    .cw-dialog {
+        width: calc(100% - 10px);
     }
 }

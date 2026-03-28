@@ -1,90 +1,409 @@
 (function ($) {
+    'use strict';
 
     const api = window.CW_API || {};
 
-    /* ==========================================================
-       JS cookie
-    ========================================================== */
-    (function setCWJsCookie() {
-        try {
-            function getCookie(name) {
-                const v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
-                return v ? v.pop() : '';
-            }
-            if (getCookie('cw_js') === '1') return;
+    let dialogId = localStorage.getItem('cw_dialog_id') || null;
+    let lastMessageId = 0;
+    let lastReadMsg = Number(localStorage.getItem('cw_last_read_message_id') || 0);
+    let isCreatingDialog = false;
+    let currentDialogStatus = null;
+    let isPolling = false;
+    let pendingCounter = 0;
+    let messageCache = [];
+    let renderedMessageMap = {};
 
-            const expires = new Date(Date.now() + 24 * 60 * 60 * 1000).toUTCString();
-            let cookie = "cw_js=1; path=/; expires=" + expires + "; SameSite=Lax";
-            if (location.protocol === 'https:') cookie += "; Secure";
-            document.cookie = cookie;
-        } catch (e) {
-            console.warn('cw: setCWJsCookie failed', e);
+    const badge = $('#cw-badge');
+    const chatBox = $('#cw-chat-box');
+    const chatWindow = $('#cw-chat-window');
+    const newDialogBtn = $('#cw-new-dialog-btn');
+    const openBtn = $('#cw-open-btn');
+
+    const SOUND_UNLOCK_KEY = 'cw_sound_unlocked';
+    const SOUND_LAST_OPERATOR_KEY = 'cw_last_notified_operator_message_id';
+    const READ_SYNC_KEY = 'cw_last_synced_read_message_id';
+
+    let soundUnlocked = localStorage.getItem(SOUND_UNLOCK_KEY) === '1';
+    let soundUnlocking = false;
+    let lastNotifiedOperatorMessageId = Number(localStorage.getItem(SOUND_LAST_OPERATOR_KEY) || 0);
+    let lastSyncedReadMsg = Number(localStorage.getItem(READ_SYNC_KEY) || 0);
+
+    function updateNewDialogBtn() {
+        if (isCreatingDialog) {
+            newDialogBtn.addClass('disabled');
+            return;
         }
-    })();
 
-    /* ==========================================================
-       REST nonce
-    ========================================================== */
-    if (api.nonce) {
-        $.ajaxSetup({
-            beforeSend(xhr) {
-                xhr.setRequestHeader('X-WP-Nonce', api.nonce);
-            },
-            xhrFields: { withCredentials: true }
-        });
+        if (currentDialogStatus === 'closed') {
+            newDialogBtn.removeClass('disabled');
+        } else {
+            newDialogBtn.addClass('disabled');
+        }
     }
 
-    /* ==========================================================
-       State
-    ========================================================== */
-    let dialogId = localStorage.getItem("cw_dialog_id") || null;
-    let lastMessageId = 0;
-    let lastReadMsg = Number(localStorage.getItem("cw_last_read_message_id") || 0);
-    let isCreatingDialog = false;
-    let isRequestFormActive = false;
+    function getClientKey() {
+        let key = localStorage.getItem('cw_client_key');
+        if (!key) {
+            key = 'ck_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+            localStorage.setItem('cw_client_key', key);
+        }
+        return key;
+    }
 
-    const badge = $("#cw-badge");
-    const chatBox = $("#cw-chat-box");
-    const chatWindow = $("#cw-chat-window");
-    const newDialogBtn = $("#cw-new-dialog-btn");
-    const openBtn = $("#cw-open-btn");
+    function getClientInfo() {
+        let timezone = '';
 
-    newDialogBtn.addClass("disabled");
+        try {
+            timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+        } catch (e) {}
 
-    /* ==========================================================
-       Helpers
-    ========================================================== */
-    function isChatOpen() {
-        return chatBox.is(":visible");
+        return {
+            ua: navigator.userAgent || '',
+            platform: navigator.platform || '',
+            language: navigator.language || '',
+            languages: Array.isArray(navigator.languages) ? navigator.languages.join(', ') : '',
+            screen: (window.screen ? `${screen.width}x${screen.height}` : ''),
+            viewport: `${window.innerWidth || 0}x${window.innerHeight || 0}`,
+            timezone: timezone,
+            touch: ('ontouchstart' in window || navigator.maxTouchPoints > 0) ? 1 : 0
+        };
+    }
+
+    function setJsCookie() {
+        try {
+            document.cookie = 'cw_js=1; path=/; max-age=' + (60 * 60 * 24 * 365);
+        } catch (e) {}
+    }
+
+    $.ajaxSetup({
+        beforeSend(xhr) {
+            if (api.nonce) {
+                xhr.setRequestHeader('X-WP-Nonce', api.nonce);
+            }
+
+            xhr.setRequestHeader('X-CW-Client-Key', getClientKey());
+        },
+        xhrFields: { withCredentials: true }
+    });
+
+    function escapeHtml(text) {
+        return $('<div/>').text(String(text ?? '')).html();
+    }
+
+    function decodeHtmlEntities(text) {
+        return $('<textarea/>').html(String(text ?? '')).text();
+    }
+
+    function sanitizeLinkHref(href) {
+        const decoded = decodeHtmlEntities(href).trim();
+        if (!decoded) return '';
+
+        try {
+            const url = new URL(decoded, window.location.origin);
+            const protocol = (url.protocol || '').toLowerCase();
+
+            if (
+                protocol === 'http:' ||
+                protocol === 'https:' ||
+                protocol === 'mailto:' ||
+                protocol === 'tel:'
+            ) {
+                return url.href;
+            }
+        } catch (e) {}
+
+        return '';
+    }
+
+    function sanitizeFileHref(href) {
+        const decoded = decodeHtmlEntities(href).trim();
+        if (!decoded) return '';
+
+        if (/^blob:/i.test(decoded)) {
+            return decoded;
+        }
+
+        return sanitizeLinkHref(decoded) || encodeURI(decoded);
+    }
+
+    function getShortLinkLabel(href, fallbackText) {
+        const fallback = String(fallbackText || '').trim();
+
+        try {
+            const url = new URL(String(href || ''), window.location.origin);
+            const host = String(url.hostname || '').replace(/^www\./i, '');
+            return host || fallback || String(href || '');
+        } catch (e) {}
+
+        return fallback || String(href || '');
+    }
+
+    function isQrPaymentLink(href, labelText) {
+        const safeLabel = String(labelText || '').toLowerCase();
+
+        if (safeLabel.includes('сбп qr') || safeLabel.includes('qr code')) {
+            return true;
+        }
+
+        try {
+            const url = new URL(String(href || ''), window.location.origin);
+            return String(url.hostname || '').toLowerCase() === 'qr.nspk.ru';
+        } catch (e) {}
+
+        return false;
+    }
+
+    function getQrLinkIconHtml() {
+        return '<span class="cw-link-qr-icon" aria-hidden="true" style="display:inline-flex;vertical-align:-2px;margin-right:6px;">' +
+            '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+            '<rect x="1" y="1" width="4" height="4" rx="0.5" stroke="currentColor" stroke-width="1.2"/>' +
+            '<rect x="9" y="1" width="4" height="4" rx="0.5" stroke="currentColor" stroke-width="1.2"/>' +
+            '<rect x="1" y="9" width="4" height="4" rx="0.5" stroke="currentColor" stroke-width="1.2"/>' +
+            '<path d="M8 8H9.5V9.5H8V8ZM10.5 8H12V10H10.5V8ZM8 10.5H10V12H8V10.5ZM11 11H13V13H11V11Z" fill="currentColor"/>' +
+            '</svg>' +
+        '</span>';
+    }
+
+    function renderMessageText(text) {
+        const source = String(text ?? '');
+        const links = [];
+
+        const withTokens = source.replace(
+            /<a\b[^>]*href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/gi,
+            function (_match, href1, href2, href3, labelHtml) {
+                const hrefRaw = href1 || href2 || href3 || '';
+                const safeHref = sanitizeLinkHref(hrefRaw);
+
+                if (!safeHref) {
+                    return decodeHtmlEntities(labelHtml || '');
+                }
+
+                const rawLabelText = decodeHtmlEntities(
+                    String(labelHtml || '').replace(/<[^>]*>/g, '')
+                ).trim();
+
+                const labelText = (
+                    !rawLabelText ||
+                    rawLabelText === safeHref ||
+                    rawLabelText === hrefRaw
+                )
+                    ? getShortLinkLabel(safeHref, rawLabelText)
+                    : rawLabelText;
+
+                const token = '__CW_LINK_' + links.length + '__';
+
+                const iconHtml = isQrPaymentLink(safeHref, labelText)
+                    ? getQrLinkIconHtml()
+                    : '';
+
+                links.push(
+                    '<a href="' + escapeHtml(safeHref) + '" target="_blank" rel="noopener noreferrer">' +
+                        iconHtml +
+                        '<span>' + escapeHtml(labelText) + '</span>' +
+                    '</a>'
+                );
+
+                return token;
+            }
+        );
+
+        let html = escapeHtml(withTokens).replace(/\r\n|\r|\n/g, '<br>');
+
+        links.forEach(function (linkHtml, index) {
+            const token = '__CW_LINK_' + index + '__';
+            html = html.replace(token, linkHtml);
+        });
+
+        return html;
+    }
+
+    function parseDateSafe(input) {
+        if (!input) return null;
+
+        let s = String(input);
+        if (s.includes(' ') && !s.includes('T')) {
+            s = s.replace(' ', 'T');
+        }
+
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? null : d;
+    }
+
+    function formatTime(input) {
+        const d = input instanceof Date ? input : parseDateSafe(input);
+        if (!d) return '';
+
+        return new Intl.DateTimeFormat('ru-RU', {
+            hour: '2-digit',
+            minute: '2-digit'
+        }).format(d);
+    }
+
+    function nowMysqlString() {
+        const d = new Date();
+        const pad = function (n) {
+            return String(n).padStart(2, '0');
+        };
+
+        return (
+            d.getFullYear() + '-' +
+            pad(d.getMonth() + 1) + '-' +
+            pad(d.getDate()) + ' ' +
+            pad(d.getHours()) + ':' +
+            pad(d.getMinutes()) + ':' +
+            pad(d.getSeconds())
+        );
     }
 
     function scrollToBottom() {
         const el = chatWindow[0];
-        if (!el) return;
-        el.scrollTop = el.scrollHeight;
+        if (el) {
+            el.scrollTop = el.scrollHeight;
+        }
     }
 
-    function isScrolledToBottom() {
+    function isNearBottom(threshold = 24) {
         const el = chatWindow[0];
         if (!el) return true;
-        return (el.scrollHeight - el.scrollTop - el.clientHeight) < 50;
+
+        return (el.scrollHeight - el.scrollTop - el.clientHeight) <= threshold;
     }
 
-    /* ==========================================================
-       Toggle chat
-    ========================================================== */
+    function isChatOpen() {
+        return chatBox.is(':visible');
+    }
+
+    function isUserInactiveForSound() {
+        return !isChatOpen() || document.hidden;
+    }
+
+    function unlockSound() {
+        if (soundUnlocked || soundUnlocking) return;
+
+        const snd = document.getElementById('cw-sound');
+        if (!snd) return;
+
+        soundUnlocking = true;
+
+        try {
+            const prevMuted = snd.muted;
+            const prevVolume = snd.volume;
+
+            snd.muted = true;
+            snd.volume = 0;
+            snd.currentTime = 0;
+
+            const finishUnlock = function () {
+                try {
+                    snd.pause();
+                    snd.currentTime = 0;
+                    snd.muted = prevMuted;
+                    snd.volume = prevVolume;
+                } catch (e) {}
+
+                soundUnlocked = true;
+                soundUnlocking = false;
+                localStorage.setItem(SOUND_UNLOCK_KEY, '1');
+            };
+
+            const failUnlock = function () {
+                try {
+                    snd.pause();
+                    snd.currentTime = 0;
+                    snd.muted = prevMuted;
+                    snd.volume = prevVolume;
+                } catch (e) {}
+
+                soundUnlocking = false;
+            };
+
+            const playPromise = snd.play();
+
+            if (playPromise && typeof playPromise.then === 'function') {
+                playPromise.then(finishUnlock).catch(failUnlock);
+            } else {
+                finishUnlock();
+            }
+        } catch (e) {
+            soundUnlocking = false;
+        }
+    }
+
+    function playNotificationSound() {
+        const snd = document.getElementById('cw-sound');
+        if (!snd || !soundUnlocked) return;
+
+        try {
+            snd.pause();
+            snd.currentTime = 0;
+
+            const playPromise = snd.play();
+            if (playPromise && typeof playPromise.catch === 'function') {
+                playPromise.catch(function () {});
+            }
+        } catch (e) {}
+    }
+
+    function saveLastNotifiedOperatorMessageId(id) {
+        lastNotifiedOperatorMessageId = Number(id || 0);
+        localStorage.setItem(SOUND_LAST_OPERATOR_KEY, String(lastNotifiedOperatorMessageId));
+    }
+
+    function saveLastSyncedReadMsg(id) {
+        lastSyncedReadMsg = Number(id || 0);
+        localStorage.setItem(READ_SYNC_KEY, String(lastSyncedReadMsg));
+    }
+
+    function resetDialogState(keepDialogId) {
+        if (!keepDialogId) {
+            dialogId = null;
+            localStorage.removeItem('cw_dialog_id');
+        }
+
+        lastMessageId = 0;
+        lastReadMsg = 0;
+        pendingCounter = 0;
+        messageCache = [];
+        renderedMessageMap = {};
+
+        saveLastNotifiedOperatorMessageId(0);
+        saveLastSyncedReadMsg(0);
+
+        localStorage.setItem('cw_last_read_message_id', '0');
+
+        currentDialogStatus = null;
+        updateNewDialogBtn();
+
+        chatWindow.empty();
+        badge.hide();
+    }
+
+    function switchToDialog(newDialogId) {
+        const nextId = Number(newDialogId || 0);
+        if (!nextId) return;
+
+        dialogId = String(nextId);
+        localStorage.setItem('cw_dialog_id', dialogId);
+
+        resetDialogState(true);
+
+        currentDialogStatus = 'open';
+        updateNewDialogBtn();
+
+        pollMessages(true);
+    }
+
     function openChat() {
         chatBox.fadeIn(200);
-
-        // считаем всё прочитанным
-        lastReadMsg = lastMessageId;
-        try {
-            localStorage.setItem("cw_last_read_message_id", lastReadMsg);
-        } catch (e) {}
-
-        syncReadStatus();
         badge.hide();
-        requestAnimationFrame(scrollToBottom);
+
+        if (lastMessageId > lastReadMsg) {
+            lastReadMsg = lastMessageId;
+            localStorage.setItem('cw_last_read_message_id', String(lastReadMsg));
+            syncReadStatus();
+        }
+
+        scrollToBottom();
     }
 
     function closeChat() {
@@ -92,327 +411,731 @@
     }
 
     function toggleChat() {
-        isChatOpen() ? closeChat() : openChat();
+        if (isChatOpen()) {
+            closeChat();
+        } else {
+            openChat();
+        }
     }
 
-    /* ==========================================================
-       Dialog helpers
-    ========================================================== */
-    function getClientKey() {
-        let key = localStorage.getItem('cw_client_key');
-        if (!key) {
-            key = 'ck_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
-            try { localStorage.setItem('cw_client_key', key); } catch(e){}
+    function showAjaxError(prefix, xhr) {
+        let msg = prefix || 'Ошибка';
+
+        if (xhr && xhr.responseJSON && (xhr.responseJSON.details || xhr.responseJSON.error)) {
+            msg += ': ' + (xhr.responseJSON.details || xhr.responseJSON.error);
+        } else if (xhr && xhr.status) {
+            msg += ' (HTTP ' + xhr.status + ')';
         }
-        return key;
+
+        alert(msg);
     }
 
     function createDialog(callback) {
         if (isCreatingDialog) return;
 
         isCreatingDialog = true;
-        newDialogBtn.addClass("disabled");
+        updateNewDialogBtn();
 
         $.ajax({
-            url: api.root + "dialogs",
-            method: "POST",
-            contentType: "application/json; charset=utf-8",
-            data: JSON.stringify({ client_key: getClientKey() }),
-
+            url: api.root + 'dialogs',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                client_key: getClientKey(),
+                client_info: getClientInfo()
+            }),
             success(res) {
-                dialogId = res.id;
-                isCreatingDialog = false;
+                dialogId = String(res.id);
+                localStorage.setItem('cw_dialog_id', dialogId);
 
-                try {
-                    localStorage.setItem("cw_dialog_id", dialogId);
-                } catch(e){}
-
-                chatWindow.empty();
                 lastMessageId = 0;
                 lastReadMsg = 0;
-                try {
-                    localStorage.setItem("cw_last_read_message_id", 0);
-                } catch(e){}
+                pendingCounter = 0;
+                messageCache = [];
+                renderedMessageMap = {};
+
+                saveLastNotifiedOperatorMessageId(0);
+                saveLastSyncedReadMsg(0);
+
+                localStorage.setItem('cw_last_read_message_id', '0');
+
+                currentDialogStatus = 'open';
+                updateNewDialogBtn();
+
+                chatWindow.empty();
+                badge.hide();
+
+                isCreatingDialog = false;
+                updateNewDialogBtn();
 
                 if (callback) callback();
             },
-
-            error() {
+            error(xhr) {
                 isCreatingDialog = false;
-                newDialogBtn.removeClass("disabled");
-                alert('Не удалось создать диалог');
+                updateNewDialogBtn();
+                showAjaxError('Ошибка создания диалога', xhr);
             }
         });
     }
 
     function ensureDialog(callback) {
-        if (dialogId) callback();
-        else createDialog(callback);
+        if (dialogId) {
+            callback();
+        } else {
+            createDialog(callback);
+        }
     }
 
-    /* ==========================================================
-       Read sync with server 🔥
-    ========================================================== */
-    function syncReadStatus() {
-        if (!dialogId || !lastReadMsg) return;
-
-        $.ajax({
-            url: api.root + "dialogs/" + dialogId + "/read",
-            method: "POST",
-            contentType: "application/json; charset=utf-8",
-            data: JSON.stringify({
-                last_read_message_id: lastReadMsg
-            })
-        });
+    function nextPendingId() {
+        pendingCounter += 1;
+        return 'pending_' + Date.now() + '_' + pendingCounter;
     }
 
-    /* ==========================================================
-       Messages
-    ========================================================== */
-    function escapeHtml(text) {
-        return $('<div/>').text(text).html();
+    function addPendingTextMessage(text) {
+        const pendingId = nextPendingId();
+        const pendingMessage = {
+            id: pendingId,
+            pending: true,
+            message: text,
+            is_operator: 0,
+            unread: 1,
+            created_at: nowMysqlString()
+        };
+
+        const wasNearBottom = isNearBottom(140);
+        chatWindow.append(buildMessageHtml(pendingMessage));
+
+        if (isChatOpen() && wasNearBottom) {
+            scrollToBottom();
+        }
+
+        return pendingId;
     }
 
-    function appendSystemMessage(text) {
-        chatWindow.append(`
-            <div class="cw-msg cw-system">
-                <div class="cw-bubble">${escapeHtml(text)}</div>
-            </div>
-        `);
+    function addPendingFileMessage(file) {
+        const pendingId = nextPendingId();
+        const fakeUrl = URL.createObjectURL(file);
+
+        const pendingMessage = {
+            id: pendingId,
+            pending: true,
+            message: '[file]' + fakeUrl + '|' + (file.name || 'Файл'),
+            is_operator: 0,
+            unread: 1,
+            created_at: nowMysqlString(),
+            _objectUrl: fakeUrl
+        };
+
+        const wasNearBottom = isNearBottom(140);
+        chatWindow.append(buildMessageHtml(pendingMessage));
+
+        if (isChatOpen() && wasNearBottom) {
+            scrollToBottom();
+        }
+
+        return pendingId;
     }
 
-    function appendMessage(m) {
-        const isOp = Number(m.is_operator) === 1;
-        const text = m.message || "";
+    function removePendingMessage(pendingId) {
+        if (!pendingId) return;
 
-        if (text.startsWith("[request]")) {
-            const payload = text.replace("[request]", "").trim();
+        const $msg = chatWindow.find(`.cw-msg[data-id="${pendingId}"]`);
+        if ($msg.length) {
+            const objectUrl = $msg.attr('data-object-url');
 
-            if (payload === "name_optional_contact") {
-                chatWindow.append(`
-                    <div class="cw-msg cw-system cw-request">
-                        <div class="cw-bubble">
-                            <form class="cw-request-form">
-                                <strong>Оператор запрашивает ваши данные:</strong>
-                                <input name="name" placeholder="Имя (обязательно)" required />
-                                <input name="phone" placeholder="Телефон" />
-                                <input name="email" placeholder="Email" />
-                                <button type="submit" class="cw-request-submit">Отправить</button>
-                                <div class="cw-request-status"></div>
-                            </form>
-                        </div>
-                    </div>
-                `);
-                return;
+            if (objectUrl) {
+                try {
+                    URL.revokeObjectURL(objectUrl);
+                } catch (e) {}
             }
 
-            appendSystemMessage("Оператор запросил: " + payload);
-            return;
+            $msg.remove();
         }
-
-        if (text.startsWith("[system]")) {
-            appendSystemMessage(text.replace("[system]", "").trim());
-            return;
-        }
-
-        if (isOp) {
-            chatWindow.append(`
-                <div class="cw-msg cw-op">
-                    <div class="cw-bubble">${m.message}</div>
-                </div>
-            `);
-            return;
-        }
-
-        chatWindow.append(`
-            <div class="cw-msg cw-user">
-                <div class="cw-bubble">${escapeHtml(text)}</div>
-            </div>
-        `);
     }
 
-    /* ==========================================================
-       Render
-    ========================================================== */
-    function renderMessages(msgs, forceScroll) {
-        if (!Array.isArray(msgs)) msgs = [];
+    function markPendingFailed(pendingId) {
+        if (!pendingId) return;
 
-        const wasAtBottom = isScrolledToBottom();
-        chatWindow.empty();
+        const $msg = chatWindow.find(`.cw-msg[data-id="${pendingId}"]`);
+        if (!$msg.length) return;
 
-        let maxId = lastMessageId;
+        $msg.removeClass('cw-pending').addClass('cw-failed');
 
-        msgs.forEach(m => {
-            const mid = Number(m.id);
-            if (mid > maxId) maxId = mid;
-            appendMessage(m);
+        const $meta = $msg.find('.cw-msg-meta');
+        if ($meta.length) {
+            $meta.html('<span class="cw-msg-time">Не отправлено</span>');
+        }
+    }
+
+    function sendMessage() {
+        const $input = $('#cw-input');
+        const msg = ($input.val() || '').trim();
+        if (!msg) return;
+
+        ensureDialog(function () {
+            const pendingId = addPendingTextMessage(msg);
+
+            $input.val('');
+            scrollToBottom();
+
+            $.ajax({
+                url: api.root + 'dialogs/' + dialogId + '/messages',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({
+                    message: msg,
+                    operator: 0
+                }),
+                success(res) {
+                    removePendingMessage(pendingId);
+
+                    if (res && res.switch_dialog) {
+                        switchToDialog(res.switch_dialog);
+                        return;
+                    }
+
+                    pollMessages(true);
+                },
+                error(xhr) {
+                    if (xhr && xhr.status === 403 && xhr.responseJSON && xhr.responseJSON.error === 'dialog_closed') {
+                        removePendingMessage(pendingId);
+                        alert('Диалог закрыт оператором. Нажмите «Начать новый диалог».');
+                        pollMessages(true);
+                        return;
+                    }
+
+                    markPendingFailed(pendingId);
+                    showAjaxError('Не удалось отправить сообщение', xhr);
+                }
+            });
+        });
+    }
+
+    function uploadFile(file, inputEl) {
+        ensureDialog(function () {
+            const pendingId = addPendingFileMessage(file);
+            const formData = new FormData();
+
+            formData.append('file', file);
+            formData.append('operator', 0);
+
+            $.ajax({
+                url: api.root + 'dialogs/' + dialogId + '/messages',
+                method: 'POST',
+                data: formData,
+                processData: false,
+                contentType: false,
+                success(res) {
+                    if (inputEl) inputEl.value = '';
+                    removePendingMessage(pendingId);
+
+                    if (res && res.switch_dialog) {
+                        switchToDialog(res.switch_dialog);
+                        return;
+                    }
+
+                    pollMessages(true);
+                },
+                error(xhr) {
+                    if (inputEl) inputEl.value = '';
+
+                    if (xhr && xhr.status === 403 && xhr.responseJSON && xhr.responseJSON.error === 'dialog_closed') {
+                        removePendingMessage(pendingId);
+                        alert('Диалог закрыт оператором. Нажмите «Начать новый диалог».');
+                        pollMessages(true);
+                        return;
+                    }
+
+                    markPendingFailed(pendingId);
+                    showAjaxError('Ошибка загрузки файла', xhr);
+                }
+            });
+        });
+    }
+
+    function isSystemMessage(message) {
+        return String(message || '').startsWith('[system]');
+    }
+
+    function getOperatorReplyAnchorMap(messages) {
+        const sorted = (Array.isArray(messages) ? messages.slice() : []).sort(function (a, b) {
+            return Number(a.id || 0) - Number(b.id || 0);
         });
 
-        lastMessageId = maxId;
+        const replyAfterUser = {};
+        let seenOperatorReply = false;
 
-        if (forceScroll || wasAtBottom) {
-            requestAnimationFrame(scrollToBottom);
+        for (let i = sorted.length - 1; i >= 0; i -= 1) {
+            const m = sorted[i];
+            const id = Number(m.id || 0);
+            const isOperator = Number(m.is_operator) === 1;
+            const isSystem = isSystemMessage(m.message);
+
+            if (isOperator && !isSystem) {
+                seenOperatorReply = true;
+                continue;
+            }
+
+            if (!isOperator) {
+                replyAfterUser[id] = seenOperatorReply;
+            }
         }
+
+        return replyAfterUser;
     }
 
-    /* ==========================================================
-       Polling
-    ========================================================== */
-    function pollMessages() {
-        if (!dialogId || isCreatingDialog || isRequestFormActive) return;
+    function renderStatus(m) {
+        const text = String(m.message || '');
+
+        if (text.startsWith('[system]')) {
+            return '';
+        }
+
+        const isOperator = Number(m.is_operator) === 1;
+
+        if (m.pending) {
+            return `
+                <span class="cw-msg-status is-sending" aria-label="Отправляется">
+                    ⏳
+                </span>
+            `;
+        }
+
+        if (isOperator) {
+            const isReadByClient = Number(m.unread) === 0;
+
+            return `
+                <span class="cw-msg-status ${isReadByClient ? 'is-read' : 'is-sent'}"
+                      aria-label="${isReadByClient ? 'Прочитано вами' : 'Доставлено вам'}"
+                      title="${isReadByClient ? 'Прочитано вами' : 'Доставлено вам'}">
+                    ${isReadByClient ? '✓✓' : '✓'}
+                </span>
+            `;
+        }
+
+        const hasOperatorReplyAfter = !!m._hasOperatorReplyAfter;
+        const isReallyReadForUi = Number(m.unread) === 0 && hasOperatorReplyAfter;
+
+        return `
+            <span class="cw-msg-status ${isReallyReadForUi ? 'is-read' : 'is-sent'}"
+                  aria-label="${isReallyReadForUi ? 'Прочитано' : 'Доставлено'}">
+                ${isReallyReadForUi ? '✓✓' : '✓'}
+            </span>
+        `;
+    }
+
+    function renderMeta(m) {
+        const time = formatTime(m.created_at);
+
+        return `
+            <div class="cw-msg-meta">
+                ${time ? `<span class="cw-msg-time">${escapeHtml(time)}</span>` : ''}
+                ${renderStatus(m)}
+            </div>
+        `;
+    }
+
+    function buildMessageHtml(m) {
+        const id = String(m.id || '');
+        const text = String(m.message || '');
+        const isOperator = Number(m.is_operator) === 1;
+        const cls = isOperator ? 'cw-op' : 'cw-user';
+        const pendingClass = m.pending ? ' cw-pending' : '';
+        const objectUrlAttr = m._objectUrl ? ` data-object-url="${escapeHtml(m._objectUrl)}"` : '';
+
+        if (text.startsWith('[image]')) {
+            const imgUrl = (text.replace('[image]', '') || '').trim();
+            const safeUrl = sanitizeFileHref(imgUrl);
+
+            return `
+                <div class="cw-msg ${cls}${pendingClass}" data-id="${escapeHtml(id)}"${objectUrlAttr}>
+                    <div class="cw-bubble">
+                        <img src="${escapeHtml(safeUrl)}" style="max-width:180px;border-radius:8px;" alt="">
+                        ${renderMeta(m)}
+                    </div>
+                </div>
+            `;
+        }
+
+        if (text.startsWith('[file]')) {
+            const payload = (text.replace('[file]', '') || '').trim();
+            const sep = payload.indexOf('|');
+
+            let url = payload;
+            let name = 'Файл';
+
+            if (sep !== -1) {
+                url = payload.slice(0, sep).trim();
+                name = payload.slice(sep + 1).trim() || 'Файл';
+            } else {
+                try {
+                    name = decodeURIComponent(url.split('/').pop() || 'Файл');
+                } catch (e) {
+                    name = url.split('/').pop() || 'Файл';
+                }
+            }
+
+            const safeUrl = sanitizeFileHref(url);
+
+            return `
+                <div class="cw-msg ${cls}${pendingClass}" data-id="${escapeHtml(id)}"${objectUrlAttr}>
+                    <div class="cw-bubble cw-file">
+                        <a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" class="cw-file-link">
+                            <span class="cw-file-name">${escapeHtml(name)}</span>
+                        </a>
+                        ${renderMeta(m)}
+                    </div>
+                </div>
+            `;
+        }
+
+        if (text.startsWith('[system]')) {
+            return `
+                <div class="cw-msg cw-system" data-id="${escapeHtml(id)}">
+                    <div class="cw-bubble">
+                        <div class="cw-msg-text">${renderMessageText(text.replace('[system]', ''))}</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        return `
+            <div class="cw-msg ${cls}${pendingClass}" data-id="${escapeHtml(id)}">
+                <div class="cw-bubble">
+                    <div class="cw-msg-text">${renderMessageText(text)}</div>
+                    ${renderMeta(m)}
+                </div>
+            </div>
+        `;
+    }
+
+    function isMessageRead(m) {
+        return Number(m && m.unread) === 0;
+    }
+
+    function shouldRerenderMessage(prev, next) {
+        if (!prev) return true;
+
+        const prevText = String(prev.message || '');
+        const nextText = String(next.message || '');
+        const prevCreated = String(prev.created_at || '');
+        const nextCreated = String(next.created_at || '');
+        const prevOp = Number(prev.is_operator) === 1;
+        const nextOp = Number(next.is_operator) === 1;
+        const prevUnread = Number(prev.unread || 0);
+        const nextUnread = Number(next.unread || 0);
+        const prevReplyAfter = !!prev._hasOperatorReplyAfter;
+        const nextReplyAfter = !!next._hasOperatorReplyAfter;
+        const prevPending = !!prev.pending;
+        const nextPending = !!next.pending;
+        const prevRead = isMessageRead(prev);
+        const nextRead = isMessageRead(next);
+
+        if (prevRead && nextRead) {
+            return false;
+        }
+
+        return (
+            prevText !== nextText ||
+            prevCreated !== nextCreated ||
+            prevOp !== nextOp ||
+            prevUnread !== nextUnread ||
+            prevReplyAfter !== nextReplyAfter ||
+            prevPending !== nextPending
+        );
+    }
+
+    function upsertMessage(m) {
+        const id = Number(m.id || 0);
+        if (!id) return false;
+
+        const prev = renderedMessageMap[id] || null;
+        const $existing = chatWindow.find(`.cw-msg[data-id="${id}"]`);
+
+        if ($existing.length && !shouldRerenderMessage(prev, m)) {
+            renderedMessageMap[id] = Object.assign({}, m);
+            return false;
+        }
+
+        const html = buildMessageHtml(m);
+
+        renderedMessageMap[id] = Object.assign({}, m);
+
+        if ($existing.length) {
+            const objectUrl = $existing.attr('data-object-url');
+            if (objectUrl) {
+                try {
+                    URL.revokeObjectURL(objectUrl);
+                } catch (e) {}
+            }
+
+            $existing.replaceWith(html);
+            return false;
+        }
+
+        chatWindow.append(html);
+        return true;
+    }
+
+    function enrichMessagesForUi(messages) {
+        const replyMap = getOperatorReplyAnchorMap(messages);
+
+        return messages.map(function (m) {
+            const clone = Object.assign({}, m);
+            clone._hasOperatorReplyAfter = !!replyMap[Number(clone.id || 0)];
+            return clone;
+        });
+    }
+
+    function pollMessages(force) {
+        if (!dialogId) {
+            currentDialogStatus = null;
+            updateNewDialogBtn();
+            return;
+        }
+
+        if (isPolling && !force) return;
+        isPolling = true;
+
+        const requestedDialog = String(dialogId);
 
         $.ajax({
-            url: api.root + "dialogs/" + dialogId + "/messages",
-            method: "GET",
-
+            url: api.root + 'dialogs/' + requestedDialog + '/messages',
+            method: 'GET',
             success(msgs, status, xhr) {
+                if (requestedDialog !== String(dialogId)) return;
+                if (!Array.isArray(msgs)) return;
 
-                const dlgStatus = xhr.getResponseHeader("X-Dialog-Status");
+                const nearBottomBefore = isNearBottom();
+                let hasNewMessages = false;
+                let shouldPlaySound = false;
+                let maxNewOperatorId = lastNotifiedOperatorMessageId;
+                const prevLastMessageId = lastMessageId;
 
-                if (dlgStatus === "closed") {
-                    newDialogBtn.removeClass("disabled");
-                    dialogId = null;
-                    try { localStorage.removeItem("cw_dialog_id"); } catch(e){}
-                }
+                const preparedMessages = enrichMessagesForUi(msgs);
+                messageCache = preparedMessages;
 
-                renderMessages(msgs, false);
+                preparedMessages.forEach(function (m) {
+                    const id = Number(m.id || 0);
+                    const isOperator = Number(m.is_operator) === 1;
+                    const text = String(m.message || '');
+                    const isSystem = text.startsWith('[system]');
 
-                // если чат открыт — сразу считаем прочитанным и синкаем
-                if (isChatOpen()) {
-                    lastReadMsg = lastMessageId;
-                    try {
-                        localStorage.setItem("cw_last_read_message_id", lastReadMsg);
-                    } catch(e){}
-                    syncReadStatus();
-                }
+                    if (id > lastMessageId) {
+                        lastMessageId = id;
+                        hasNewMessages = true;
+                    }
 
-                // бейдж — только если есть непрочитанные от оператора
-                msgs.forEach(m => {
                     if (
-                        Number(m.id) > lastReadMsg &&
+                        id > prevLastMessageId &&
+                        isOperator &&
+                        !isSystem &&
+                        isUserInactiveForSound()
+                    ) {
+                        maxNewOperatorId = Math.max(maxNewOperatorId, id);
+
+                        if (id > lastNotifiedOperatorMessageId) {
+                            shouldPlaySound = true;
+                        }
+                    }
+
+                    upsertMessage(m);
+                });
+
+                const s = (xhr.getResponseHeader('X-Dialog-Status') || '').toLowerCase();
+                currentDialogStatus = s || 'open';
+                updateNewDialogBtn();
+
+                if (isChatOpen() && !document.hidden) {
+                    if (lastMessageId > lastReadMsg) {
+                        lastReadMsg = lastMessageId;
+                        localStorage.setItem('cw_last_read_message_id', String(lastReadMsg));
+                        syncReadStatus();
+                    }
+
+                    if (hasNewMessages && nearBottomBefore) {
+                        scrollToBottom();
+                    }
+                }
+
+                preparedMessages.forEach(function (m) {
+                    if (
+                        Number(m.id || 0) > lastReadMsg &&
                         Number(m.is_operator) === 1 &&
-                        !isChatOpen()
+                        (!isChatOpen() || document.hidden)
                     ) {
                         badge.show();
                     }
                 });
+
+                if (shouldPlaySound) {
+                    playNotificationSound();
+                    saveLastNotifiedOperatorMessageId(maxNewOperatorId);
+                }
+            },
+            complete() {
+                isPolling = false;
             }
         });
     }
 
-    /* ==========================================================
-       Send message
-    ========================================================== */
-    function sendMessage() {
-        const msg = $("#cw-input").val().trim();
-        if (!msg || isCreatingDialog) return;
+    function syncReadStatus() {
+        if (!dialogId || !lastReadMsg) return;
+        if (lastReadMsg <= lastSyncedReadMsg) return;
 
-        ensureDialog(function () {
-            if (!dialogId) return;
+        const requestedDialog = String(dialogId);
+        const readTarget = Number(lastReadMsg || 0);
 
-            $.ajax({
-                url: api.root + "dialogs/" + dialogId + "/messages",
-                method: "POST",
-                contentType: "application/json; charset=utf-8",
-                data: JSON.stringify({ message: msg, operator: 0 }),
-
-                success() {
-                    $("#cw-input").val("");
-                    requestAnimationFrame(scrollToBottom);
-                }
-            });
+        $.ajax({
+            url: api.root + 'dialogs/' + requestedDialog + '/read',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                last_read_message_id: readTarget
+            }),
+            success() {
+                if (requestedDialog !== String(dialogId)) return;
+                saveLastSyncedReadMsg(Math.max(lastSyncedReadMsg, readTarget));
+            }
         });
     }
 
-    /* ==========================================================
-       Init
-    ========================================================== */
     $(function () {
+        setJsCookie();
 
-        // toggle чат
-        openBtn.on("click", toggleChat);
-        $("#cw-close").on("click", closeChat);
+        currentDialogStatus = null;
+        updateNewDialogBtn();
 
-        // загрузка истории
-        if (dialogId) {
-            $.ajax({
-                url: api.root + "dialogs/" + dialogId + "/messages",
-                method: "GET",
-
-                success(msgs, status, xhr) {
-
-                    const dlgStatus = xhr.getResponseHeader("X-Dialog-Status");
-
-                    if (dlgStatus === "closed") {
-                        newDialogBtn.removeClass("disabled");
-                        dialogId = null;
-                        try { localStorage.removeItem("cw_dialog_id"); } catch(e){}
-                    }
-
-                    renderMessages(msgs, true);
-                }
+        function closeImgModal() {
+            $('#cw-img-modal').fadeOut(150, function () {
+                $('#cw-img-modal .cw-img-modal-img').attr('src', '');
             });
         }
 
-        chatWindow.on('focusin', '.cw-request-form input', () => {
-            isRequestFormActive = true;
+        if (!$('#cw-img-modal').length) {
+            $('body').append(`
+                <div id="cw-img-modal" style="display:none;">
+                    <div class="cw-img-modal-inner">
+                        <div class="cw-img-modal-wrap">
+                            <button type="button" class="cw-img-modal-close" aria-label="Закрыть">×</button>
+                            <img class="cw-img-modal-img" src="" alt="preview">
+                        </div>
+                    </div>
+                </div>
+            `);
+        }
+
+        $(document).on('click keydown touchstart', function () {
+            unlockSound();
         });
 
-        chatWindow.on('focusout', '.cw-request-form input', () => {
-            setTimeout(() => {
-                if (!chatWindow.find('.cw-request-form input:focus').length) {
-                    isRequestFormActive = false;
+        $(window).on('focus', function () {
+            if (dialogId) {
+                pollMessages(true);
+            }
+        });
+
+        $(document).on('visibilitychange', function () {
+            if (document.visibilityState === 'visible' && dialogId) {
+                badge.hide();
+                pollMessages(true);
+
+                if (isChatOpen() && lastMessageId > lastReadMsg) {
+                    lastReadMsg = lastMessageId;
+                    localStorage.setItem('cw_last_read_message_id', String(lastReadMsg));
+                    syncReadStatus();
                 }
-            }, 50);
+            }
         });
 
-        chatWindow.on('submit', '.cw-request-form', function (e) {
-            e.preventDefault();
+        $(document).on('click', '#cw-chat-window .cw-op img, #cw-chat-window .cw-user img', function () {
+            const src = $(this).attr('src');
+            if (!src) return;
 
-            const form = $(this);
-            const name = form.find('[name="name"]').val().trim();
-            if (!name) return;
-
-            const parts = [`Имя: ${name}`];
-            const phone = form.find('[name="phone"]').val().trim();
-            const email = form.find('[name="email"]').val().trim();
-            if (phone) parts.push(`Телефон: ${phone}`);
-            if (email) parts.push(`Email: ${email}`);
-
-            ensureDialog(function () {
-                if (!dialogId) return;
-
-                $.ajax({
-                    url: api.root + "dialogs/" + dialogId + "/messages",
-                    method: "POST",
-                    contentType: "application/json; charset=utf-8",
-                    data: JSON.stringify({ message: parts.join('; '), operator: 0 }),
-
-                    success() {
-                        isRequestFormActive = false;
-                        form.closest('.cw-request')
-                            .find('.cw-bubble')
-                            .html('<div class="cw-system">Спасибо — данные отправлены.</div>');
-                        requestAnimationFrame(scrollToBottom);
-                    }
-                });
-            });
+            $('#cw-img-modal .cw-img-modal-img').attr('src', src);
+            $('#cw-img-modal').fadeIn(150);
         });
 
-        newDialogBtn.on("click", function () {
-            if (newDialogBtn.hasClass("disabled")) return;
-            createDialog();
+        $(document).on('click', '#cw-img-modal .cw-img-modal-img', function () {
+            closeImgModal();
         });
 
-        setInterval(pollMessages, 2000);
+        $(document).on('click', '#cw-img-modal', function (e) {
+            if ($(e.target).closest('.cw-img-modal-inner').length) return;
+            closeImgModal();
+        });
 
-        $("#cw-send").on("click", sendMessage);
-        $("#cw-input").on("keypress", e => {
-            if (e.key === "Enter") {
+        $(document).on('click', '#cw-img-modal .cw-img-modal-close', function () {
+            closeImgModal();
+        });
+
+        $(document).on('keydown', function (e) {
+            if (e.key === 'Escape' && $('#cw-img-modal').is(':visible')) {
+                closeImgModal();
+            }
+        });
+
+        openBtn.on('click', function () {
+            unlockSound();
+            toggleChat();
+        });
+
+        $('#cw-close').on('click', closeChat);
+
+        $('#cw-send').on('click', function () {
+            unlockSound();
+            sendMessage();
+        });
+
+        $('#cw-input').on('keydown', function (e) {
+            if (e.key === 'Enter') {
                 e.preventDefault();
+                unlockSound();
                 sendMessage();
             }
         });
+
+        $(document).on('click', '#cw-file-btn', function () {
+            unlockSound();
+
+            const $file = $('#cw-file');
+            if ($file.length) {
+                $file.trigger('click');
+            }
+        });
+
+        $(document).on('change', '#cw-file', function () {
+            const file = this.files && this.files[0];
+            if (!file) return;
+
+            const maxSize = 20 * 1024 * 1024;
+            if (file.size > maxSize) {
+                alert('Максимальный размер файла — 20 МБ');
+                this.value = '';
+                return;
+            }
+
+            unlockSound();
+            uploadFile(file, this);
+        });
+
+        newDialogBtn.on('click', function () {
+            if (newDialogBtn.hasClass('disabled')) return;
+
+            resetDialogState(false);
+
+            createDialog(function () {
+                pollMessages(true);
+            });
+        });
+
+        if (dialogId) {
+            pollMessages(true);
+        }
+
+        setInterval(function () {
+            pollMessages(false);
+        }, 2000);
     });
 
 })(jQuery);
