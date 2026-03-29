@@ -3,18 +3,9 @@
 
     const TEASER_ID = 'cw-chat-teaser';
     const TEASER_HIDE_UNTIL_KEY = 'cw_teaser_hide_until';
-    const TEASER_INDEX_KEY = 'cw_teaser_index';
     const TEASER_MIN_DELAY = 3000;
     const TEASER_MAX_DELAY = 4000;
     const TEASER_HIDE_MS = 24 * 60 * 60 * 1000;
-
-    const TEASER_MESSAGES = [
-        'Есть вопрос? Напишите',
-        'Нужна помощь? Мы онлайн',
-        'Подскажем по заказу',
-        'Помочь с выбором?',
-        'Ответим в чате'
-    ];
 
     let teaserTimer = null;
     let observer = null;
@@ -51,38 +42,6 @@
         return Number(localStorage.getItem(TEASER_HIDE_UNTIL_KEY) || 0);
     }
 
-    function getStoredTeaserIndex() {
-        if (!TEASER_MESSAGES.length) {
-            return 0;
-        }
-
-        const index = Number(localStorage.getItem(TEASER_INDEX_KEY) || 0);
-
-        if (!Number.isFinite(index) || index < 0) {
-            return 0;
-        }
-
-        return index % TEASER_MESSAGES.length;
-    }
-
-    function setStoredTeaserIndex(index) {
-        localStorage.setItem(TEASER_INDEX_KEY, String(index));
-    }
-
-    function getNextTeaserMessage() {
-        if (!TEASER_MESSAGES.length) {
-            return 'Есть вопрос? Напишите';
-        }
-
-        const index = getStoredTeaserIndex();
-        const text = TEASER_MESSAGES[index];
-        const nextIndex = (index + 1) % TEASER_MESSAGES.length;
-
-        setStoredTeaserIndex(nextIndex);
-
-        return text;
-    }
-
     function ensureTeaser() {
         let $teaser = $('#' + TEASER_ID);
 
@@ -94,17 +53,12 @@
             '<div id="' + TEASER_ID + '" style="display:none;" aria-live="polite">' +
                 '<button type="button" class="cw-chat-teaser-close" aria-label="Закрыть подсказку">×</button>' +
                 '<div class="cw-chat-teaser-body" role="button" tabindex="0" aria-label="Открыть чат">' +
-                    '<div class="cw-chat-teaser-text"></div>' +
+                    '<div class="cw-chat-teaser-text">Есть вопрос? Напишите</div>' +
                 '</div>' +
             '</div>'
         );
 
         return $('#' + TEASER_ID);
-    }
-
-    function setTeaserText(text) {
-        const $teaser = ensureTeaser();
-        $teaser.find('.cw-chat-teaser-text').text(text || '');
     }
 
     function canShowTeaser() {
@@ -120,8 +74,6 @@
         clearTeaserTimer();
 
         if (!canShowTeaser()) return;
-
-        setTeaserText(getNextTeaserMessage());
 
         const $teaser = ensureTeaser();
         $teaser.stop(true, true).fadeIn(200);
