@@ -3,9 +3,8 @@
 
     const TEASER_ID = 'cw-chat-teaser';
     const TEASER_HIDE_UNTIL_KEY = 'cw_teaser_hide_until';
-    const TEASER_SHOWN_SESSION_KEY = 'cw_teaser_shown_session';
-    const TEASER_MIN_DELAY = 10000;
-    const TEASER_MAX_DELAY = 25000;
+    const TEASER_MIN_DELAY = 3000;
+    const TEASER_MAX_DELAY = 4000;
     const TEASER_HIDE_MS = 24 * 60 * 60 * 1000;
 
     let teaserTimer = null;
@@ -43,14 +42,6 @@
         return Number(localStorage.getItem(TEASER_HIDE_UNTIL_KEY) || 0);
     }
 
-    function isShownInSession() {
-        return sessionStorage.getItem(TEASER_SHOWN_SESSION_KEY) === '1';
-    }
-
-    function markShownInSession() {
-        sessionStorage.setItem(TEASER_SHOWN_SESSION_KEY, '1');
-    }
-
     function ensureTeaser() {
         let $teaser = $('#' + TEASER_ID);
 
@@ -74,7 +65,6 @@
         if (!getOpenBtn().length) return false;
         if (document.hidden) return false;
         if (isChatOpen()) return false;
-        if (isShownInSession()) return false;
         if (getHiddenUntil() > Date.now()) return false;
 
         return true;
@@ -86,8 +76,6 @@
         if (!canShowTeaser()) return;
 
         const $teaser = ensureTeaser();
-        markShownInSession();
-
         $teaser.stop(true, true).fadeIn(200);
     }
 
@@ -98,7 +86,6 @@
 
         if (withCooldown) {
             setCooldown();
-            markShownInSession();
         }
 
         if ($teaser.length) {
