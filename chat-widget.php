@@ -2,7 +2,7 @@
 /*
 Plugin Name: Chat Widget
 Description: Онлайн-чат с оператором + Telegram и MAX интеграция.
-Version: 5.3
+Version: 5.4
 Author: Fakel
 */
 
@@ -18,6 +18,8 @@ require_once __DIR__ . '/inc/telegram-settings.php';
 require_once __DIR__ . '/inc/max.php';
 require_once __DIR__ . '/inc/max-settings.php';
 require_once __DIR__ . '/inc/commands-settings.php';
+require_once __DIR__ . '/inc/bot.php';
+require_once __DIR__ . '/inc/bot-settings.php';
 require_once __DIR__ . '/admin/operator-panel.php';
 
 /* ============================================================
@@ -55,12 +57,14 @@ function cw_create_or_update_tables(): void {
         dialog_id BIGINT UNSIGNED NOT NULL,
         message LONGTEXT NOT NULL,
         is_operator TINYINT(1) NOT NULL DEFAULT 0,
+        is_bot TINYINT(1) NOT NULL DEFAULT 0,
         unread TINYINT(1) NOT NULL DEFAULT 1,
         created_at DATETIME NOT NULL,
         PRIMARY KEY (id),
         KEY dialog_id (dialog_id),
         KEY unread (unread),
-        KEY is_operator (is_operator)
+        KEY is_operator (is_operator),
+        KEY is_bot (is_bot)
     ) {$charset};";
 
     dbDelta($sql_dialogs);
@@ -75,6 +79,12 @@ function cw_create_or_update_tables(): void {
     if ($has_geo_isp && !$has_geo_org) {
         $wpdb->query("UPDATE {$table_dialogs} SET geo_org = geo_isp WHERE geo_org = ''");
     }
+
+    $has_is_bot = $wpdb->get_var("SHOW COLUMNS FROM {$table_messages} LIKE 'is_bot'");
+    if (!$has_is_bot) {
+        $wpdb->query("ALTER TABLE {$table_messages} ADD COLUMN is_bot TINYINT(1) NOT NULL DEFAULT 0 AFTER is_operator");
+        $wpdb->query("ALTER TABLE {$table_messages} ADD KEY is_bot (is_bot)");
+    }
 }
 
 /* ============================================================
@@ -85,15 +95,32 @@ register_activation_hook(__FILE__, function () {
     cw_create_or_update_tables();
 });
 
-add_action('plugins_loaded', function () {
-    cw_create_or_update_tables();
-});
+
+/* ============================================================
+   FRONTEND VISIBILITY
+============================================================ */
+
+function cw_should_render_frontend_widget(): bool {
+    if (is_admin()) {
+        return false;
+    }
+
+    if (function_exists('is_404') && is_404()) {
+        return false;
+    }
+
+    return true;
+}
 
 /* ============================================================
    FRONTEND ASSETS
 ============================================================ */
 
 add_action('wp_enqueue_scripts', function () {
+    if (!cw_should_render_frontend_widget()) {
+        return;
+    }
+
 
     wp_enqueue_style(
         'cw-style',
@@ -105,9 +132,19 @@ add_action('wp_enqueue_scripts', function () {
     );
 
     wp_enqueue_script(
+        'cw-shared',
+        plugin_dir_url(__FILE__) . 'cw-shared.js',
+        [],
+        file_exists(__DIR__ . '/cw-shared.js')
+            ? filemtime(__DIR__ . '/cw-shared.js')
+            : '1.0',
+        true
+    );
+
+    wp_enqueue_script(
         'cw-script',
         plugin_dir_url(__FILE__) . 'chat-widget.js',
-        ['jquery'],
+        ['jquery', 'cw-shared'],
         file_exists(__DIR__ . '/chat-widget.js')
             ? filemtime(__DIR__ . '/chat-widget.js')
             : '1.0',
@@ -134,7 +171,11 @@ add_action('wp_enqueue_scripts', function () {
    FRONTEND HTML
 ============================================================ */
 
-add_action('wp_footer', function () { ?>
+add_action('wp_footer', function () {
+    if (!cw_should_render_frontend_widget()) {
+        return;
+    }
+?>
 
     <div id="cw-open-btn" role="button" aria-label="Открыть чат">
         <svg viewBox="0 0 24 24" width="24" height="24" fill="white" aria-hidden="true">
@@ -214,9 +255,11 @@ add_action('admin_menu', function () {
 
     $tg_enabled  = function_exists('cw_tg_enabled') ? cw_tg_enabled() : true;
     $max_enabled = function_exists('cw_max_enabled') ? cw_max_enabled() : true;
+    $bot_enabled = function_exists('cw_bot_enabled') ? cw_bot_enabled() : false;
 
     $tg_label  = cw_menu_status_label('Telegram', $tg_enabled);
     $max_label = cw_menu_status_label('MAX', $max_enabled);
+    $bot_label = cw_menu_status_label('Бот', $bot_enabled);
 
     add_menu_page(
         'Чат',
@@ -248,6 +291,15 @@ add_action('admin_menu', function () {
 
     add_submenu_page(
         'cw_operator',
+        $bot_label,
+        $bot_label,
+        'manage_options',
+        'cw_bot',
+        'cw_bot_settings_page'
+    );
+
+    add_submenu_page(
+        'cw_operator',
         'Команды',
         'Команды',
         'manage_options',
@@ -262,12 +314,15 @@ add_action('admin_menu', function () {
 
 add_action('admin_enqueue_scripts', function ($hook) {
 
-    if (!in_array($hook, [
+    $admin_pages = [
         'toplevel_page_cw_operator',
         'chat_page_cw_telegram',
         'chat_page_cw_max',
-        'chat_page_cw_commands'
-    ], true)) {
+        'chat_page_cw_bot',
+        'chat_page_cw_commands',
+    ];
+
+    if (!in_array($hook, $admin_pages, true)) {
         return;
     }
 
@@ -281,9 +336,23 @@ add_action('admin_enqueue_scripts', function ($hook) {
     );
 
     wp_enqueue_script(
+        'cw-shared',
+        plugin_dir_url(__FILE__) . 'cw-shared.js',
+        [],
+        file_exists(__DIR__ . '/cw-shared.js')
+            ? filemtime(__DIR__ . '/cw-shared.js')
+            : '1.0',
+        true
+    );
+
+    if ($hook !== 'toplevel_page_cw_operator') {
+        return;
+    }
+
+    wp_enqueue_script(
         'cw-operator-js',
         plugin_dir_url(__FILE__) . 'admin/operator-panel.js',
-        ['jquery'],
+        ['jquery', 'cw-shared'],
         file_exists(__DIR__ . '/admin/operator-panel.js')
             ? filemtime(__DIR__ . '/admin/operator-panel.js')
             : '1.0',
