@@ -1306,9 +1306,21 @@ function cw_max_build_operator_keyboard(int $dialog_id): array {
             ],
             [
                 'type'    => 'callback',
+                'text'    => '📜 История диалога',
+                'payload' => 'cw_history_' . $dialog_id,
+            ],
+        ],
+        [
+            [
+                'type'    => 'callback',
                 'text'    => '❌ Закрыть',
                 'payload' => 'cw_close_' . $dialog_id,
                 'intent'  => 'negative',
+            ],
+            [
+                'type'    => 'callback',
+                'text'    => '📊 Статистика',
+                'payload' => 'cw_stats_' . $dialog_id,
             ],
         ],
     ];
@@ -1334,12 +1346,12 @@ function cw_max_build_operator_keyboard(int $dialog_id): array {
 
 function cw_max_send_help(int $user_id): void {
     $text = implode("\n", [
-        'Команды оператора:',
-        '/dialogs — последние диалоги',
-        '/reply 123 Ваш ответ — ответить в диалог #123',
-        '/close 123 — закрыть диалог #123',
-        '/cancel — отменить режим ответа после кнопки «Ответить»',
-        'После кнопки «Ответить» можно отправить текст, изображение или файл.',
+        'Оператор MAX работает через кнопки в уведомлениях.',
+        'Нажмите «Ответить», чтобы отправить сообщение, файл или изображение в нужный диалог.',
+        'Нажмите «История диалога», чтобы получить последние сообщения.',
+        'Нажмите «Закрыть», чтобы закрыть диалог.',
+        'Нажмите «Статистика», чтобы получить список открытых и закрытых диалогов.',
+        'Нажмите «СБП QR», чтобы отправить ссылку на оплату в диалог.',
         '/start — привязать этого пользователя как оператора, если он ещё не сохранён',
     ]);
 
@@ -1776,9 +1788,8 @@ function cw_max_send_dialogs_list(int $user_id): void {
     }
 
     $lines[] = '';
-    $lines[] = 'Ответ: /reply 123 ваш текст';
-    $lines[] = 'Закрыть: /close 123';
-    $lines[] = 'Отмена режима ответа: /cancel';
+    $lines[] = 'Для ответа используйте кнопку «Ответить» в уведомлении по нужному диалогу.';
+    $lines[] = 'Для закрытия используйте кнопку «Закрыть».';
 
     cw_max_send_to_user($user_id, implode("\n", $lines));
 }
@@ -1792,20 +1803,291 @@ function cw_max_insert_operator_message(int $dialog_id, string $text): int {
     return cw_max_insert_operator_raw_message($dialog_id, $text);
 }
 
-function cw_max_close_dialog(int $dialog_id): bool {
+function cw_max_prepare_history_preview(string $message): array {
+    $message = trim((string) $message);
+
+    if ($message === '') {
+        return [
+            'role' => 'other',
+            'text' => '',
+        ];
+    }
+
+    if (stripos($message, '[system]') === 0) {
+        $text = trim((string) mb_substr($message, 8));
+        $text = wp_strip_all_tags($text);
+        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = preg_replace('/\s+/u', ' ', $text);
+
+        return [
+            'role' => 'system',
+            'text' => trim((string) $text),
+        ];
+    }
+
+    if (stripos($message, '[image]') === 0) {
+        return [
+            'role' => 'media',
+            'text' => '[Изображение]',
+        ];
+    }
+
+    if (stripos($message, '[file]') === 0) {
+        $payload = trim((string) mb_substr($message, 6));
+        $name = 'Файл';
+        $pos = strpos($payload, '|');
+
+        if ($pos !== false) {
+            $name = trim((string) substr($payload, $pos + 1));
+        }
+
+        if ($name === '') {
+            $name = 'Файл';
+        }
+
+        return [
+            'role' => 'media',
+            'text' => '[Файл] ' . $name,
+        ];
+    }
+
+    $message = wp_strip_all_tags($message);
+    $message = html_entity_decode($message, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $message = preg_replace('/\s+/u', ' ', $message);
+    $message = trim((string) $message);
+
+    if (mb_strlen($message) > 280) {
+        $message = mb_substr($message, 0, 280) . '...';
+    }
+
+    return [
+        'role' => 'text',
+        'text' => $message,
+    ];
+}
+
+function cw_max_history_time_label(string $datetime): string {
+    $datetime = trim($datetime);
+    if ($datetime === '') {
+        return '';
+    }
+
+    $ts = strtotime($datetime);
+    if (!$ts) {
+        return $datetime;
+    }
+
+    return date_i18n('H:i', $ts);
+}
+
+function cw_max_extract_timezone_from_browser_label(string $browser_label): string {
+    $browser_label = trim($browser_label);
+    if ($browser_label === '') {
+        return '';
+    }
+
+    if (preg_match('/(?:^|\|)\s*TZ:\s*([^|]+)/u', $browser_label, $m)) {
+        return trim((string) ($m[1] ?? ''));
+    }
+
+    return '';
+}
+
+function cw_max_format_dialog_ids_for_stats(array $ids): string {
+    $ids = array_values(array_filter(array_map('intval', $ids), static function ($id) {
+        return $id > 0;
+    }));
+
+    if (!$ids) {
+        return '-';
+    }
+
+    $parts = array_map(static function ($id) {
+        return '#' . $id;
+    }, $ids);
+
+    $result = implode(', ', $parts);
+
+    if (mb_strlen($result) > 3000) {
+        $result = mb_substr($result, 0, 3000) . '...';
+    }
+
+    return $result;
+}
+
+function cw_max_get_dialog_history_text(int $dialog_id, int $limit = 12): string {
     global $wpdb;
 
-    if ($dialog_id <= 0) return false;
+    if ($dialog_id <= 0) {
+        return 'Диалог не найден.';
+    }
+
+    if (function_exists('cw_ensure_dialog_geo_loaded')) {
+        cw_ensure_dialog_geo_loaded($dialog_id);
+    }
+
+    $limit = max(1, min(30, (int) $limit));
+    $tableD = $wpdb->prefix . 'cw_dialogs';
+    $tableM = $wpdb->prefix . 'cw_messages';
+
+    $dialog = $wpdb->get_row(
+        $wpdb->prepare(
+            "SELECT geo_org, geo_ip, geo_browser
+             FROM {$tableD}
+             WHERE id = %d",
+            $dialog_id
+        ),
+        ARRAY_A
+    );
+
+    $rows = $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT id, message, is_operator, is_bot, created_at
+             FROM {$tableM}
+             WHERE dialog_id = %d
+             ORDER BY id DESC
+             LIMIT %d",
+            $dialog_id,
+            $limit
+        ),
+        ARRAY_A
+    );
+
+    if (!$rows) {
+        return 'История диалога #' . intval($dialog_id) . ' пуста.';
+    }
+
+    $rows = array_reverse($rows);
+
+    $provider = trim((string) ($dialog['geo_org'] ?? ''));
+    $ip = trim((string) ($dialog['geo_ip'] ?? ''));
+    $tz = cw_max_extract_timezone_from_browser_label((string) ($dialog['geo_browser'] ?? ''));
+
+    $lines = [];
+    $lines[] = '📜 История диалога #' . intval($dialog_id);
+
+    if ($ip !== '' || $provider !== '' || $tz !== '') {
+        $lines[] = '';
+
+        if ($ip !== '') {
+            $lines[] = 'IP: ' . $ip;
+        }
+
+        if ($provider !== '') {
+            $lines[] = 'Провайдер: ' . $provider;
+        }
+
+        if ($tz !== '') {
+            $lines[] = 'TZ: ' . $tz;
+        }
+    }
+
+    $lines[] = '';
+
+    foreach ($rows as $row) {
+        $preview = cw_max_prepare_history_preview((string) ($row['message'] ?? ''));
+        $message_text = trim((string) ($preview['text'] ?? ''));
+
+        if ($message_text === '') {
+            continue;
+        }
+
+        $time = cw_max_history_time_label((string) ($row['created_at'] ?? ''));
+        $is_operator = (int) ($row['is_operator'] ?? 0) === 1;
+        $is_bot = (int) ($row['is_bot'] ?? 0) === 1;
+
+        if (($preview['role'] ?? '') === 'system') {
+            $title = '🔔 Система';
+        } elseif ($is_bot) {
+            $title = '🤖 Бот';
+        } elseif ($is_operator) {
+            $title = '🧑‍💼 Оператор';
+        } else {
+            $title = '👤 Пользователь';
+        }
+
+        if ($time !== '') {
+            $title .= ' · ' . $time;
+        }
+
+        $lines[] = $title;
+        $lines[] = $message_text;
+        $lines[] = '';
+    }
+
+    while (!empty($lines) && end($lines) === '') {
+        array_pop($lines);
+    }
+
+    $result = implode("\n", $lines);
+
+    if (mb_strlen($result) > 3900) {
+        $result = mb_substr($result, 0, 3900) . "\n...";
+    }
+
+    return $result;
+}
+
+function cw_max_dialog_stats_text(int $dialog_id): string {
+    global $wpdb;
+
+    $D = $wpdb->prefix . 'cw_dialogs';
+
+    $open_ids = $wpdb->get_col(
+        "SELECT id
+         FROM {$D}
+         WHERE status = 'open'
+         ORDER BY id DESC"
+    );
+
+    $closed_ids = $wpdb->get_col(
+        "SELECT id
+         FROM {$D}
+         WHERE status = 'closed'
+         ORDER BY id DESC"
+    );
+
+    $open_ids = is_array($open_ids) ? $open_ids : [];
+    $closed_ids = is_array($closed_ids) ? $closed_ids : [];
+
+    $lines = [];
+    $lines[] = '📊 Статистика диалогов';
+    $lines[] = '';
+    $lines[] = 'Открытые: ' . count($open_ids);
+    $lines[] = cw_max_format_dialog_ids_for_stats($open_ids);
+    $lines[] = '';
+    $lines[] = 'Закрытые: ' . count($closed_ids);
+    $lines[] = cw_max_format_dialog_ids_for_stats($closed_ids);
+
+    $result = implode("\n", $lines);
+
+    if (mb_strlen($result) > 3900) {
+        $result = mb_substr($result, 0, 3900) . "\n...";
+    }
+
+    return $result;
+}
+
+function cw_max_close_dialog(int $dialog_id): string {
+    global $wpdb;
+
+    if ($dialog_id <= 0) {
+        return 'not_found';
+    }
 
     $D = $wpdb->prefix . 'cw_dialogs';
     $M = $wpdb->prefix . 'cw_messages';
 
-    $exists = (int) $wpdb->get_var(
-        $wpdb->prepare("SELECT COUNT(*) FROM {$D} WHERE id=%d", $dialog_id)
+    $status = (string) $wpdb->get_var(
+        $wpdb->prepare("SELECT status FROM {$D} WHERE id=%d", $dialog_id)
     );
 
-    if ($exists <= 0) {
-        return false;
+    if ($status === '') {
+        return 'not_found';
+    }
+
+    if ($status === 'closed') {
+        return 'already_closed';
     }
 
     if (function_exists('cw_mark_user_messages_read_by_operator')) {
@@ -1822,7 +2104,7 @@ function cw_max_close_dialog(int $dialog_id): bool {
         'created_at'  => current_time('mysql'),
     ]);
 
-    return true;
+    return 'closed';
 }
 
 function cw_max_extract_sender_user_id(array $update): int {
@@ -1915,18 +2197,64 @@ function cw_max_process_callback_update(array $update) {
         return ['status' => 'reply_selected'];
     }
 
-    if ($action === 'close') {
-        $ok = cw_max_close_dialog($dialog_id);
+    if ($action === 'history') {
+        $history_text = cw_max_get_dialog_history_text($dialog_id, 12);
+
         if ($callback_id !== '') {
-            cw_max_answer_callback_notification($callback_id, $ok ? 'Диалог #' . $dialog_id . ' закрыт.' : 'Не удалось закрыть диалог #' . $dialog_id . '.');
+            cw_max_answer_callback_notification($callback_id, 'История диалога #' . $dialog_id . ' отправлена.');
         }
-        if ($ok) {
+
+        cw_max_send_to_user($sender_user_id, $history_text, [
+            'notify' => false,
+        ]);
+
+        return ['status' => 'history_processed'];
+    }
+
+    if ($action === 'close') {
+        $close_result = cw_max_close_dialog($dialog_id);
+
+        if ($close_result === 'closed') {
+            if ($callback_id !== '') {
+                cw_max_answer_callback_notification($callback_id, 'Диалог #' . $dialog_id . ' закрыт.');
+            }
+
             cw_max_clear_reply_dialog($sender_user_id);
             cw_max_send_to_user($sender_user_id, 'Диалог #' . $dialog_id . ' закрыт.', ['notify' => false]);
-        } else {
-            cw_max_send_to_user($sender_user_id, 'Не удалось закрыть диалог #' . $dialog_id . '.', ['notify' => false]);
+
+            return ['status' => 'close_processed'];
         }
-        return ['status' => 'close_processed'];
+
+        if ($close_result === 'already_closed') {
+            if ($callback_id !== '') {
+                cw_max_answer_callback_notification($callback_id, 'Диалог #' . $dialog_id . ' ранее закрыт.');
+            }
+
+            cw_max_send_to_user($sender_user_id, 'Диалог #' . $dialog_id . ' ранее закрыт.', ['notify' => false]);
+
+            return ['status' => 'already_closed'];
+        }
+
+        if ($callback_id !== '') {
+            cw_max_answer_callback_notification($callback_id, 'Диалог #' . $dialog_id . ' не найден.');
+        }
+
+        cw_max_send_to_user($sender_user_id, 'Диалог #' . $dialog_id . ' не найден.', ['notify' => false]);
+
+        return ['status' => 'dialog_not_found'];
+    }
+    if ($action === 'stats') {
+        $stats_text = cw_max_dialog_stats_text($dialog_id);
+
+        if ($callback_id !== '') {
+            cw_max_answer_callback_notification($callback_id, 'Статистика по диалогу #' . $dialog_id . ' отправлена.');
+        }
+
+        cw_max_send_to_user($sender_user_id, $stats_text, [
+            'notify' => false,
+        ]);
+
+        return ['status' => 'stats_processed'];
     }
 
     if ($action === 'sbp') {
@@ -2047,7 +2375,7 @@ function cw_max_webhook_handler(WP_REST_Request $r) {
 
         cw_max_send_to_user(
             $sender_user_id,
-            "Оператор MAX привязан.\n\nВаш User ID: {$sender_user_id}\n\nТеперь вы будете получать уведомления из сайта.\nДля списка диалогов: /dialogs"
+            "Оператор MAX привязан.\n\nВаш User ID: {$sender_user_id}\n\nТеперь вы будете получать уведомления из сайта.\nИспользуйте кнопки в уведомлениях для работы с диалогами"
         );
 
         return ['status' => 'bound'];
@@ -2070,48 +2398,6 @@ function cw_max_webhook_handler(WP_REST_Request $r) {
     if ($text === '/help') {
         cw_max_send_help($sender_user_id);
         return ['status' => 'help'];
-    }
-
-    if ($text === '/dialogs') {
-        cw_max_send_dialogs_list($sender_user_id);
-        return ['status' => 'dialogs'];
-    }
-
-    if ($text === '/cancel') {
-        cw_max_clear_reply_dialog($sender_user_id);
-        cw_max_send_to_user($sender_user_id, 'Режим ответа отменён.', ['notify' => false]);
-        return ['status' => 'cancelled'];
-    }
-
-    if (preg_match('/^\/close\s+(\d+)$/u', $text, $m)) {
-        $dialog_id = (int) $m[1];
-
-        if (cw_max_close_dialog($dialog_id)) {
-            cw_max_send_to_user($sender_user_id, 'Диалог #' . $dialog_id . ' закрыт.');
-            cw_max_clear_reply_dialog($sender_user_id);
-        } else {
-            cw_max_send_to_user($sender_user_id, 'Не удалось закрыть диалог #' . $dialog_id . '.');
-        }
-
-        return ['status' => 'close_processed'];
-    }
-
-    if (preg_match('/^\/reply\s+(\d+)\s+([\s\S]+)$/u', $text, $m)) {
-        $dialog_id = (int) $m[1];
-        $reply_text = trim((string) $m[2]);
-
-        $site_message_id = cw_max_insert_operator_message($dialog_id, $reply_text);
-        if ($site_message_id > 0) {
-            $receipt_ok = cw_max_send_reply_receipt($site_message_id, $dialog_id, $sender_user_id, $reply_text);
-            if (!$receipt_ok) {
-                cw_max_send_to_user($sender_user_id, 'Ответ отправлен в диалог #' . $dialog_id . '.');
-            }
-            cw_max_clear_reply_dialog($sender_user_id);
-        } else {
-            cw_max_send_to_user($sender_user_id, 'Не удалось отправить ответ в диалог #' . $dialog_id . '. Возможно, диалог закрыт или не найден.');
-        }
-
-        return ['status' => 'reply_processed'];
     }
 
     $reply_dialog = cw_max_get_reply_dialog($sender_user_id);

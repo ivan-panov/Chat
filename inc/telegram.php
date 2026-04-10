@@ -260,6 +260,281 @@ function cw_tg_send_photo(int $chat_id, $attachment_or_url, string $caption = ''
     cw_tg_api('sendPhoto', $body);
 }
 
+function cw_tg_escape_html_text(string $text): string {
+    return htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+function cw_tg_prepare_message_preview(string $message): array {
+    $message = trim((string) $message);
+
+    if ($message === '') {
+        return [
+            'role' => 'other',
+            'text' => '',
+        ];
+    }
+
+    if (stripos($message, '[system]') === 0) {
+        $text = trim((string) mb_substr($message, 8));
+        $text = wp_strip_all_tags($text);
+        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = preg_replace('/\s+/u', ' ', $text);
+
+        return [
+            'role' => 'system',
+            'text' => trim((string) $text),
+        ];
+    }
+
+    if (stripos($message, '[image]') === 0) {
+        return [
+            'role' => 'media',
+            'text' => '[Изображение]',
+        ];
+    }
+
+    if (stripos($message, '[file]') === 0) {
+        $payload = trim((string) mb_substr($message, 6));
+        $name = 'Файл';
+
+        $pos = strpos($payload, '|');
+        if ($pos !== false) {
+            $name = trim((string) substr($payload, $pos + 1));
+        }
+
+        if ($name === '') {
+            $name = 'Файл';
+        }
+
+        return [
+            'role' => 'media',
+            'text' => '[Файл] ' . $name,
+        ];
+    }
+
+    $message = wp_strip_all_tags($message);
+    $message = html_entity_decode($message, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $message = preg_replace('/\s+/u', ' ', $message);
+    $message = trim((string) $message);
+
+    if (mb_strlen($message) > 280) {
+        $message = mb_substr($message, 0, 280) . '...';
+    }
+
+    return [
+        'role' => 'text',
+        'text' => $message,
+    ];
+}
+
+function cw_tg_history_time_label(string $datetime): string {
+    $datetime = trim($datetime);
+    if ($datetime === '') {
+        return '';
+    }
+
+    $ts = strtotime($datetime);
+    if (!$ts) {
+        return $datetime;
+    }
+
+    return date_i18n('H:i', $ts);
+}
+
+function cw_tg_extract_timezone_from_browser_label(string $browser_label): string {
+    $browser_label = trim($browser_label);
+    if ($browser_label === '') {
+        return '';
+    }
+
+    if (preg_match('/(?:^|\|)\s*TZ:\s*([^|]+)/u', $browser_label, $m)) {
+        return trim((string) ($m[1] ?? ''));
+    }
+
+    return '';
+}
+
+function cw_tg_format_dialog_ids_for_stats(array $ids): string {
+    $ids = array_values(array_filter(array_map('intval', $ids), static function ($id) {
+        return $id > 0;
+    }));
+
+    if (!$ids) {
+        return '-';
+    }
+
+    $parts = array_map(static function ($id) {
+        return '#' . $id;
+    }, $ids);
+
+    $result = implode(', ', $parts);
+
+    if (mb_strlen($result) > 3000) {
+        $result = mb_substr($result, 0, 3000) . '...';
+    }
+
+    return $result;
+}
+
+function cw_tg_get_dialog_history_text(int $dialog_id, int $limit = 12): string {
+    global $wpdb;
+
+    if ($dialog_id <= 0) {
+        return 'Диалог не найден.';
+    }
+
+    if (function_exists('cw_ensure_dialog_geo_loaded')) {
+        cw_ensure_dialog_geo_loaded($dialog_id);
+    }
+
+    $limit = max(1, min(30, (int) $limit));
+    $tableD = $wpdb->prefix . 'cw_dialogs';
+    $tableM = $wpdb->prefix . 'cw_messages';
+
+    $dialog = $wpdb->get_row(
+        $wpdb->prepare(
+            "SELECT geo_org, geo_ip, geo_browser
+             FROM {$tableD}
+             WHERE id = %d",
+            $dialog_id
+        ),
+        ARRAY_A
+    );
+
+    $rows = $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT id, message, is_operator, is_bot, created_at
+             FROM {$tableM}
+             WHERE dialog_id = %d
+             ORDER BY id DESC
+             LIMIT %d",
+            $dialog_id,
+            $limit
+        ),
+        ARRAY_A
+    );
+
+    if (!$rows) {
+        return 'История диалога #' . intval($dialog_id) . ' пуста.';
+    }
+
+    $rows = array_reverse($rows);
+
+    $provider = trim((string) ($dialog['geo_org'] ?? ''));
+    $ip = trim((string) ($dialog['geo_ip'] ?? ''));
+    $tz = cw_tg_extract_timezone_from_browser_label((string) ($dialog['geo_browser'] ?? ''));
+
+    $lines = [];
+    $lines[] = '📜 <b>История диалога #' . intval($dialog_id) . '</b>';
+
+    if ($ip !== '' || $provider !== '' || $tz !== '') {
+        $lines[] = '';
+
+        if ($ip !== '') {
+            $lines[] = '<b>IP:</b> ' . esc_html($ip);
+        }
+
+        if ($provider !== '') {
+            $lines[] = '<b>Провайдер:</b> ' . esc_html($provider);
+        }
+
+        if ($tz !== '') {
+            $lines[] = '<b>TZ:</b> ' . esc_html($tz);
+        }
+    }
+
+    $lines[] = '';
+
+    foreach ($rows as $row) {
+        $preview = cw_tg_prepare_message_preview((string) ($row['message'] ?? ''));
+        $message_text = trim((string) ($preview['text'] ?? ''));
+
+        if ($message_text === '') {
+            continue;
+        }
+
+        $time = cw_tg_history_time_label((string) ($row['created_at'] ?? ''));
+        $is_operator = (int) ($row['is_operator'] ?? 0) === 1;
+        $is_bot = (int) ($row['is_bot'] ?? 0) === 1;
+
+        if (($preview['role'] ?? '') === 'system') {
+            $title = '🔔 <b>Система</b>';
+        } elseif ($is_bot) {
+            $title = '🤖 <b>Бот</b>';
+        } elseif ($is_operator) {
+            $title = '🧑‍💼 <b>Оператор</b>';
+        } else {
+            $title = '👤 <b>Пользователь</b>';
+        }
+
+        if ($time !== '') {
+            $title .= ' · <code>' . esc_html($time) . '</code>';
+        }
+
+        $lines[] = $title;
+        $lines[] = esc_html($message_text);
+        $lines[] = '';
+    }
+
+    while (!empty($lines) && end($lines) === '') {
+        array_pop($lines);
+    }
+
+    $result = implode("
+", $lines);
+
+    if (mb_strlen(wp_strip_all_tags($result)) > 3500) {
+        $result = mb_substr($result, 0, 3900) . "
+...";
+    }
+
+    return $result;
+}
+
+function cw_tg_dialog_stats_text(int $dialog_id): string {
+    global $wpdb;
+
+    unset($dialog_id);
+
+    $D = $wpdb->prefix . 'cw_dialogs';
+
+    $open_ids = $wpdb->get_col(
+        "SELECT id
+         FROM {$D}
+         WHERE status = 'open'
+         ORDER BY id DESC"
+    );
+
+    $closed_ids = $wpdb->get_col(
+        "SELECT id
+         FROM {$D}
+         WHERE status = 'closed'
+         ORDER BY id DESC"
+    );
+
+    $open_ids = is_array($open_ids) ? $open_ids : [];
+    $closed_ids = is_array($closed_ids) ? $closed_ids : [];
+
+    $lines = [];
+    $lines[] = '📊 <b>Статистика диалогов</b>';
+    $lines[] = '';
+    $lines[] = '<b>Открытые:</b> ' . count($open_ids);
+    $lines[] = esc_html(cw_tg_format_dialog_ids_for_stats($open_ids));
+    $lines[] = '';
+    $lines[] = '<b>Закрытые:</b> ' . count($closed_ids);
+    $lines[] = esc_html(cw_tg_format_dialog_ids_for_stats($closed_ids));
+
+    $result = implode("
+", $lines);
+
+    if (mb_strlen(wp_strip_all_tags($result)) > 3500) {
+        $result = mb_substr($result, 0, 3900) . "
+...";
+    }
+
+    return $result;
+}
+
 function cw_tg_notify_operator(int $dialog_id, string $message): void {
     if (!cw_tg_enabled()) return;
 
@@ -275,8 +550,18 @@ function cw_tg_notify_operator(int $dialog_id, string $message): void {
                 'callback_data' => 'cw_reply_' . $dialog_id,
             ],
             [
+                'text' => '📜 История диалога',
+                'callback_data' => 'cw_history_' . $dialog_id,
+            ],
+        ],
+        [
+            [
                 'text' => '❌ Закрыть',
                 'callback_data' => 'cw_close_' . $dialog_id,
+            ],
+            [
+                'text' => '📊 Статистика',
+                'callback_data' => 'cw_stats_' . $dialog_id,
             ],
         ],
         [
@@ -288,7 +573,7 @@ function cw_tg_notify_operator(int $dialog_id, string $message): void {
     ];
 
     if (stripos($trimmed, '[image]') === 0) {
-        $url = trim(mb_substr($trimmed, 7));
+        $url = trim((string) mb_substr($trimmed, 7));
         $url = esc_url($url);
 
         $caption  = "🖼 <b>Новое изображение</b>\n";
@@ -303,14 +588,14 @@ function cw_tg_notify_operator(int $dialog_id, string $message): void {
     }
 
     if (stripos($trimmed, '[file]') === 0) {
-        $payload = trim(mb_substr($trimmed, 6));
+        $payload = trim((string) mb_substr($trimmed, 6));
         $url  = $payload;
         $name = '';
 
         $pos = strpos($payload, '|');
         if ($pos !== false) {
-            $url  = trim(substr($payload, 0, $pos));
-            $name = trim(substr($payload, $pos + 1));
+            $url  = trim((string) substr($payload, 0, $pos));
+            $name = trim((string) substr($payload, $pos + 1));
         }
 
         $url = esc_url($url);
@@ -568,6 +853,21 @@ function cw_tg_async_notify_handler(WP_REST_Request $r) {
     return ['status' => 'processed'];
 }
 
+function cw_tg_get_dialog_status(int $dialog_id): string {
+    global $wpdb;
+
+    if ($dialog_id <= 0) {
+        return '';
+    }
+
+    return (string) $wpdb->get_var(
+        $wpdb->prepare(
+            "SELECT status FROM {$wpdb->prefix}cw_dialogs WHERE id = %d",
+            $dialog_id
+        )
+    );
+}
+
 function cw_tg_webhook_handler(WP_REST_Request $r) {
     global $wpdb;
 
@@ -608,6 +908,23 @@ function cw_tg_webhook_handler(WP_REST_Request $r) {
         $dialog = intval($matches[2]);
 
         if ($action === 'close') {
+            $current_status = (string) $wpdb->get_var(
+                $wpdb->prepare(
+                    "SELECT status FROM {$tableD} WHERE id = %d",
+                    $dialog
+                )
+            );
+
+            if ($current_status === '') {
+                cw_tg_send($admin, "Диалог #{$dialog} не найден.");
+                return ['status' => 'dialog_not_found'];
+            }
+
+            if ($current_status === 'closed') {
+                cw_tg_send($admin, "Диалог #{$dialog} ранее закрыт.");
+                return ['status' => 'already_closed'];
+            }
+
             if (function_exists('cw_mark_user_messages_read_by_operator')) {
                 cw_mark_user_messages_read_by_operator($dialog);
             }
@@ -626,8 +943,32 @@ function cw_tg_webhook_handler(WP_REST_Request $r) {
         }
 
         if ($action === 'reply') {
+            $current_status = cw_tg_get_dialog_status($dialog);
+
+            if ($current_status === '') {
+                delete_user_meta($admin, 'cw_reply_dialog');
+                cw_tg_send($admin, "Диалог #{$dialog} не найден.");
+                return ['status' => 'dialog_not_found'];
+            }
+
+            if ($current_status === 'closed') {
+                delete_user_meta($admin, 'cw_reply_dialog');
+                cw_tg_send($admin, "Диалог #{$dialog} ранее закрыт.");
+                return ['status' => 'already_closed'];
+            }
+
             update_user_meta($admin, 'cw_reply_dialog', $dialog);
             cw_tg_send($admin, "Отправьте сообщение или фото для диалога #{$dialog}");
+        }
+
+        if ($action === 'history') {
+            $history_text = cw_tg_get_dialog_history_text($dialog, 12);
+            cw_tg_send($admin, $history_text);
+        }
+
+        if ($action === 'stats') {
+            $stats_text = cw_tg_dialog_stats_text($dialog);
+            cw_tg_send($admin, $stats_text);
         }
 
         if ($action === 'sbp') {
@@ -664,6 +1005,20 @@ function cw_tg_webhook_handler(WP_REST_Request $r) {
         if ($dialog <= 0) {
             cw_tg_send($admin, 'Сначала нажмите «✉ Ответить» у нужного диалога.');
             return ['status' => 'no_dialog_selected'];
+        }
+
+        $current_status = cw_tg_get_dialog_status($dialog);
+
+        if ($current_status === '') {
+            delete_user_meta($admin, 'cw_reply_dialog');
+            cw_tg_send($admin, "Диалог #{$dialog} не найден.");
+            return ['status' => 'dialog_not_found'];
+        }
+
+        if ($current_status === 'closed') {
+            delete_user_meta($admin, 'cw_reply_dialog');
+            cw_tg_send($admin, "Диалог #{$dialog} ранее закрыт.");
+            return ['status' => 'already_closed'];
         }
 
         if (!empty($msg['text'])) {

@@ -322,7 +322,12 @@ function cw_get_geo_by_ip(string $ip): array {
     }
 
     $response = wp_remote_get(
-        'https://ipwho.is/' . rawurlencode($ip),
+        add_query_arg(
+            [
+                'lang' => 'ru',
+            ],
+            'https://ipwho.is/' . rawurlencode($ip)
+        ),
         [
             'timeout' => 4,
             'headers' => [
@@ -373,6 +378,29 @@ function cw_get_geo_by_ip(string $ip): array {
     ];
 }
 
+function cw_dialog_geo_cooldown_key(int $dialog_id): string {
+    return 'cw_geo_retry_after_' . max(0, $dialog_id);
+}
+
+function cw_dialog_geo_can_retry(int $dialog_id): bool {
+    if ($dialog_id <= 0) return false;
+
+    $retry_after = (int) get_option(cw_dialog_geo_cooldown_key($dialog_id), 0);
+    return $retry_after <= time();
+}
+
+function cw_dialog_geo_set_retry_cooldown(int $dialog_id, int $seconds = 900): void {
+    if ($dialog_id <= 0) return;
+
+    update_option(cw_dialog_geo_cooldown_key($dialog_id), time() + max(60, $seconds), false);
+}
+
+function cw_dialog_geo_clear_retry_cooldown(int $dialog_id): void {
+    if ($dialog_id <= 0) return;
+
+    delete_option(cw_dialog_geo_cooldown_key($dialog_id));
+}
+
 function cw_ensure_dialog_geo_loaded(int $dialog_id): void {
     if ($dialog_id <= 0) return;
 
@@ -405,7 +433,21 @@ function cw_ensure_dialog_geo_loaded(int $dialog_id): void {
         return;
     }
 
+    if (!cw_dialog_geo_can_retry($dialog_id)) {
+        return;
+    }
+
     $geo = cw_get_geo_by_ip($ip);
+
+    if (
+        trim((string) ($geo['country'] ?? '')) === '' &&
+        trim((string) ($geo['city'] ?? '')) === '' &&
+        trim((string) ($geo['region'] ?? '')) === '' &&
+        trim((string) ($geo['org'] ?? '')) === ''
+    ) {
+        cw_dialog_geo_set_retry_cooldown($dialog_id, 900);
+        return;
+    }
 
     $wpdb->update(
         $D,
@@ -419,6 +461,8 @@ function cw_ensure_dialog_geo_loaded(int $dialog_id): void {
         ['%s', '%s', '%s', '%s'],
         ['%d']
     );
+
+    cw_dialog_geo_clear_retry_cooldown($dialog_id);
 }
 
 function cw_chat_widget_upload_dir($dirs) {
@@ -827,7 +871,11 @@ function cw_rest_messages(WP_REST_Request $r) {
         return new WP_REST_Response(['error' => 'permission_denied'], 403);
     }
 
-    if ($status === 'closed' && !$isOp) {
+    if ($status === '') {
+        return new WP_REST_Response(['error' => 'dialog_not_found'], 404);
+    }
+
+    if ($status === 'closed') {
         return new WP_REST_Response(['error' => 'dialog_closed'], 403);
     }
 
@@ -959,6 +1007,14 @@ function cw_rest_messages(WP_REST_Request $r) {
         return $command_result;
     }
 
+    $bot_command_result = function_exists('cw_bot_try_handle_dialog_command')
+        ? cw_bot_try_handle_dialog_command($id, $msg, (bool) $isOp, $status, $has_user_messages)
+        : null;
+
+    if (is_array($bot_command_result)) {
+        return $bot_command_result;
+    }
+
     if ($isOp) {
         cw_mark_user_messages_read_by_operator($id);
     }
@@ -977,11 +1033,17 @@ function cw_rest_messages(WP_REST_Request $r) {
 
     $new_message_id = (int) $wpdb->insert_id;
 
-    if (!$isOp && $has_user_messages === 0) {
+    $bot_result = ['handled' => false];
+
+    if (!$isOp && $new_message_id > 0 && function_exists('cw_bot_try_reply')) {
+        $bot_result = (array) cw_bot_try_reply($id, $msg, $new_message_id);
+    }
+
+    if (!$isOp && $has_user_messages === 0 && empty($bot_result['handled'])) {
         cw_insert_system_message($id, cw_get_first_reply_waiting_message());
     }
 
-    if (!$isOp && $new_message_id > 0) {
+    if (!$isOp && $new_message_id > 0 && empty($bot_result['handled'])) {
         if (function_exists('cw_tg_dispatch_message_notification_async')) {
             cw_tg_dispatch_message_notification_async($new_message_id);
         } elseif (function_exists('cw_tg_queue_message_notification')) {
@@ -1006,16 +1068,34 @@ function cw_rest_close(WP_REST_Request $r) {
     global $wpdb;
 
     $id = intval($r['id']);
+    $D  = $wpdb->prefix . 'cw_dialogs';
+    $M  = $wpdb->prefix . 'cw_messages';
+
+    if ($id <= 0) {
+        return new WP_REST_Response(['error' => 'dialog_not_found'], 404);
+    }
+
+    $status = (string) $wpdb->get_var(
+        $wpdb->prepare("SELECT status FROM {$D} WHERE id=%d", $id)
+    );
+
+    if ($status === '') {
+        return new WP_REST_Response(['error' => 'dialog_not_found'], 404);
+    }
+
+    if ($status === 'closed') {
+        return ['status' => 'already_closed'];
+    }
 
     cw_mark_user_messages_read_by_operator($id);
 
     $wpdb->update(
-        $wpdb->prefix . 'cw_dialogs',
+        $D,
         ['status' => 'closed'],
         ['id' => $id]
     );
 
-    $wpdb->insert($wpdb->prefix . 'cw_messages', [
+    $wpdb->insert($M, [
         'dialog_id'   => $id,
         'message'     => '[system]Диалог закрыт оператором.',
         'is_operator' => 1,
@@ -1049,30 +1129,64 @@ function cw_rest_read(WP_REST_Request $r) {
     global $wpdb;
 
     $id = intval($r['id']);
+
     $guard = cw_require_dialog_access_or_403($r, $id);
-    if ($guard !== true) return $guard;
+    if ($guard !== true) {
+        return $guard;
+    }
 
     $last_id = intval($r->get_param('last_read_message_id'));
-    if ($last_id <= 0) return ['status' => 'ok'];
+    if ($last_id <= 0) {
+        return ['status' => 'ok'];
+    }
 
-    $isAdmin = current_user_can('manage_options');
-    $target_is_operator = $isAdmin ? 0 : 1;
+    $D = $wpdb->prefix . 'cw_dialogs';
+    $M = $wpdb->prefix . 'cw_messages';
+
+    $dialog = $wpdb->get_row(
+        $wpdb->prepare(
+            "SELECT id, client_key FROM {$D} WHERE id = %d",
+            $id
+        ),
+        ARRAY_A
+    );
+
+    if (!$dialog) {
+        return new WP_REST_Response(['error' => 'dialog_not_found'], 404);
+    }
+
+    $db_client_key  = (string) ($dialog['client_key'] ?? '');
+    $req_client_key = cw_get_client_key_from_request($r);
+
+    $isClientReader = (
+        $db_client_key !== '' &&
+        $req_client_key !== '' &&
+        hash_equals($db_client_key, $req_client_key)
+    );
+
+    if ($isClientReader) {
+        $target_is_operator = 1;
+    } elseif (current_user_can('manage_options')) {
+        $target_is_operator = 0;
+    } else {
+        $target_is_operator = 1;
+    }
 
     $wpdb->query(
         $wpdb->prepare(
-            "UPDATE {$wpdb->prefix}cw_messages
-             SET unread=0
-             WHERE dialog_id=%d
-               AND id<=%d
-               AND is_operator=%d
-               AND unread=1",
+            "UPDATE {$M}
+             SET unread = 0
+             WHERE dialog_id = %d
+               AND id <= %d
+               AND is_operator = %d
+               AND unread = 1",
             $id,
             $last_id,
             $target_is_operator
         )
     );
 
-    if (!$isAdmin && $target_is_operator === 1 && function_exists('cw_max_mark_reply_receipts_read_up_to')) {
+    if ($target_is_operator === 1 && function_exists('cw_max_mark_reply_receipts_read_up_to')) {
         cw_max_mark_reply_receipts_read_up_to($id, $last_id);
     }
 

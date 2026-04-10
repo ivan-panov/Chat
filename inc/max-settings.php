@@ -149,7 +149,7 @@ function cw_max_settings_page() {
         } else {
             $ok = cw_max_send_to_user(
                 $admin_user_id_int,
-                "Тестовое сообщение из Chat Widget через MAX.\n\nЕсли вы его видите — интеграция отправки работает.\nКнопки появятся на реальных уведомлениях по диалогам сайта."
+                "Тестовое сообщение из Chat Widget через MAX.\n\nЕсли вы его видите — интеграция отправки работает.\nКнопки «Ответить», «История диалога», «Закрыть», «Статистика» и «СБП QR» появятся на реальных уведомлениях по диалогам сайта."
             );
 
             $test_result = $ok ? 'Тестовое сообщение отправлено.' : 'Не удалось отправить тестовое сообщение.';
@@ -282,14 +282,9 @@ function cw_max_settings_page() {
             <code>message_created</code>, <code>message_callback</code>, <code>bot_started</code>.
         </p>
 
-        <p>После привязки оператор может использовать в MAX:</p>
-        <pre style="background:#fff;padding:12px;border:1px solid #ddd;">/start
-/dialogs
-/reply 123 Ваш ответ
-/close 123
-/cancel</pre>
+        <p>После привязки оператор использует в MAX команду <code>/start</code> и кнопки из уведомлений.</p>
 
-        <p>Кнопки <strong>Ответить</strong>, <strong>Закрыть</strong> и <strong>СБП QR</strong> появятся на реальных уведомлениях о новых сообщениях из сайта.</p>
+        <p>Кнопки <strong>Ответить</strong>, <strong>История диалога</strong>, <strong>Закрыть</strong>, <strong>Статистика</strong> и <strong>СБП QR</strong> появятся на реальных уведомлениях о новых сообщениях из сайта.</p>
     </div>
     <?php
 }
