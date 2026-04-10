@@ -1114,11 +1114,108 @@ function cw_rest_delete(WP_REST_Request $r) {
     global $wpdb;
 
     $id = intval($r['id']);
+    if ($id <= 0) {
+        return new WP_REST_Response(['error' => 'invalid_dialog_id'], 400);
+    }
 
-    $wpdb->delete($wpdb->prefix . 'cw_messages', ['dialog_id' => $id]);
-    $wpdb->delete($wpdb->prefix . 'cw_dialogs', ['id' => $id]);
+    $D = $wpdb->prefix . 'cw_dialogs';
+    $M = $wpdb->prefix . 'cw_messages';
 
-    return ['status' => 'deleted'];
+    $dialog_exists = (int) $wpdb->get_var(
+        $wpdb->prepare("SELECT COUNT(*) FROM {$D} WHERE id = %d", $id)
+    );
+
+    if ($dialog_exists <= 0) {
+        return new WP_REST_Response(['error' => 'dialog_not_found'], 404);
+    }
+
+    $messages = $wpdb->get_col(
+        $wpdb->prepare(
+            "SELECT message FROM {$M} WHERE dialog_id = %d",
+            $id
+        )
+    );
+
+    $uploads = wp_upload_dir();
+    $baseurl = isset($uploads['baseurl']) ? rtrim((string) $uploads['baseurl'], '/') : '';
+    $basedir = isset($uploads['basedir']) ? rtrim((string) $uploads['basedir'], DIRECTORY_SEPARATOR) : '';
+
+    $chat_widget_baseurl = $baseurl !== '' ? $baseurl . '/chat-widget/' : '';
+    $chat_widget_basedir = $basedir !== '' ? wp_normalize_path($basedir . '/chat-widget/') : '';
+
+    $deleted_files = [];
+    $seen_paths = [];
+
+    if ($chat_widget_baseurl !== '' && $chat_widget_basedir !== '') {
+        foreach ((array) $messages as $raw_message) {
+            $message = trim((string) $raw_message);
+            if ($message === '') {
+                continue;
+            }
+
+            $file_url = '';
+
+            if (stripos($message, '[image]') === 0) {
+                $file_url = trim((string) mb_substr($message, 7));
+            } elseif (stripos($message, '[file]') === 0) {
+                $payload = trim((string) mb_substr($message, 6));
+                $pos = strpos($payload, '|');
+                $file_url = $pos !== false
+                    ? trim((string) substr($payload, 0, $pos))
+                    : trim($payload);
+            }
+
+            if ($file_url === '') {
+                continue;
+            }
+
+            $file_url = html_entity_decode($file_url, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $file_url = trim($file_url);
+
+            if ($file_url === '' || strpos($file_url, $chat_widget_baseurl) !== 0) {
+                continue;
+            }
+
+            $relative = ltrim((string) substr($file_url, strlen($chat_widget_baseurl)), '/');
+            if ($relative === '') {
+                continue;
+            }
+
+            $relative = explode('?', $relative, 2)[0];
+            $relative = explode('#', $relative, 2)[0];
+            $relative = wp_normalize_path(rawurldecode($relative));
+
+            if ($relative === '' || strpos($relative, '../') !== false) {
+                continue;
+            }
+
+            $full_path = wp_normalize_path($chat_widget_basedir . $relative);
+
+            if (strpos($full_path, $chat_widget_basedir) !== 0) {
+                continue;
+            }
+
+            if (isset($seen_paths[$full_path])) {
+                continue;
+            }
+            $seen_paths[$full_path] = true;
+
+            if (file_exists($full_path) && is_file($full_path) && is_writable($full_path)) {
+                if (@unlink($full_path)) {
+                    $deleted_files[] = $full_path;
+                }
+            }
+        }
+    }
+
+    $wpdb->delete($M, ['dialog_id' => $id]);
+    $wpdb->delete($D, ['id' => $id]);
+
+    return [
+        'status'         => 'deleted',
+        'deleted_files'  => count($deleted_files),
+        'deleted_dialog' => $id,
+    ];
 }
 
 /* ============================================================

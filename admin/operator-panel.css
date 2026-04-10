@@ -722,3 +722,168 @@
         width: calc(100% - 10px);
     }
 }
+
+body.cw-modal-open {
+    overflow: hidden;
+}
+
+/* =========================================
+   DELETE MODAL - SYSTEM MESSAGE STYLE
+========================================= */
+
+body.cw-modal-open {
+    overflow: hidden;
+}
+
+#cw-delete-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 99999998;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    box-sizing: border-box;
+    background: rgba(31, 36, 48, 0.34);
+    backdrop-filter: blur(4px);
+}
+
+#cw-delete-modal.is-open {
+    display: flex;
+}
+
+.cw-delete-modal-dialog {
+    width: 100%;
+    max-width: 560px;
+    background: #fffaf0;
+    color: #5d4a18;
+    border: 2px solid #f0b400;
+    border-radius: 16px;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.18);
+    overflow: hidden;
+    animation: cwDeleteModalShow 0.18s ease;
+}
+
+@keyframes cwDeleteModalShow {
+    from {
+        opacity: 0;
+        transform: translateY(8px) scale(0.985);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+.cw-delete-modal-header {
+    padding: 18px 22px 14px;
+    background: #fffaf0;
+    border-bottom: 1px solid rgba(240, 180, 0, 0.35);
+}
+
+.cw-delete-modal-header h2 {
+    margin: 0;
+    font-size: 28px;
+    line-height: 1.2;
+    font-weight: 700;
+    color: #5d4a18;
+}
+
+.cw-delete-modal-body {
+    padding: 18px 22px 8px;
+    background: #fffaf0;
+    color: #5d4a18;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.cw-delete-modal-body p {
+    margin: 0 0 14px;
+}
+
+.cw-delete-modal-body ul {
+    margin: 0 0 16px 18px;
+    padding: 0;
+}
+
+.cw-delete-modal-body li {
+    margin: 0 0 8px;
+}
+
+.cw-delete-modal-body strong {
+    color: #8a4b00;
+}
+
+.cw-delete-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 18px 22px 22px;
+    background: #fffaf0;
+    border-top: 1px solid rgba(240, 180, 0, 0.22);
+}
+
+#cw-delete-cancel-btn,
+#cw-delete-confirm-btn {
+    height: 46px !important;
+    min-height: 46px;
+    border-radius: 14px !important;
+    padding: 0 18px !important;
+    font-weight: 600;
+    transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+}
+
+#cw-delete-cancel-btn {
+    background: #ffffff !important;
+    color: #8a4b00 !important;
+    border: 1px solid rgba(240, 180, 0, 0.55) !important;
+    box-shadow: none !important;
+}
+
+#cw-delete-cancel-btn:hover {
+    background: #fff4d6 !important;
+    transform: translateY(-1px);
+}
+
+#cw-delete-confirm-btn {
+    background: linear-gradient(135deg, #ffb300 0%, #ff9800 100%) !important;
+    border: none !important;
+    color: #ffffff !important;
+    box-shadow: 0 10px 24px rgba(255, 152, 0, 0.24) !important;
+}
+
+#cw-delete-confirm-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 14px 28px rgba(255, 152, 0, 0.30) !important;
+}
+
+#cw-delete-cancel-btn:disabled,
+#cw-delete-confirm-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none !important;
+}
+
+@media (max-width: 640px) {
+    #cw-delete-modal {
+        padding: 14px;
+    }
+
+    .cw-delete-modal-dialog {
+        max-width: 100%;
+    }
+
+    .cw-delete-modal-header h2 {
+        font-size: 24px;
+    }
+
+    .cw-delete-modal-actions {
+        flex-direction: column;
+    }
+
+    #cw-delete-cancel-btn,
+    #cw-delete-confirm-btn {
+        width: 100%;
+    }
+}

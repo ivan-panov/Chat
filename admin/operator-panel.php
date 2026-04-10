@@ -68,6 +68,35 @@ function cw_operator_panel_page() {
             <img src="" alt="">
         </div>
 
+        <div id="cw-delete-modal" style="display:none;" aria-hidden="true">
+            <div class="cw-delete-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="cw-delete-modal-title">
+                <div class="cw-delete-modal-header">
+                    <h2 id="cw-delete-modal-title">Удалить диалог?</h2>
+                </div>
+
+                <div class="cw-delete-modal-body">
+                    <p>Диалог будет удалён полностью.</p>
+                    <p>Будут удалены:</p>
+                    <ul>
+                        <li>все сообщения диалога;</li>
+                        <li>все прикреплённые файлы диалога;</li>
+                        <li>сама запись диалога.</li>
+                    </ul>
+                    <p><strong>Это действие нельзя отменить.</strong></p>
+                </div>
+
+                <div class="cw-delete-modal-actions">
+                    <button id="cw-delete-cancel-btn" class="button button-secondary" type="button">
+                        Отмена
+                    </button>
+
+                    <button id="cw-delete-confirm-btn" class="button button-primary" type="button">
+                        Удалить
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <audio id="cw-sound" preload="auto">
             <source
                 src="<?php echo esc_url(plugin_dir_url(__FILE__) . '../assets/notify.mp3'); ?>"

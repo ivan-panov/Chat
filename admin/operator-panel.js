@@ -68,6 +68,10 @@
     const $closeBtn  = $('#cw-close-btn');
     const $deleteBtn = $('#cw-delete-btn');
 
+    const $deleteModal      = $('#cw-delete-modal');
+    const $deleteCancelBtn  = $('#cw-delete-cancel-btn');
+    const $deleteConfirmBtn = $('#cw-delete-confirm-btn');
+
     function getDateKey(d) {
         if (!d) return '';
 
@@ -151,20 +155,20 @@
     }
 
     function setCloseButtonState() {
-    if (!currentDialog) {
-        $closeBtn.prop('disabled', true).text('Закрыть');
-        $deleteBtn.prop('disabled', true);
-        return;
-    }
+        if (!currentDialog) {
+            $closeBtn.prop('disabled', true).text('Закрыть');
+            $deleteBtn.prop('disabled', true);
+            return;
+        }
 
-    $deleteBtn.prop('disabled', false);
+        $deleteBtn.prop('disabled', false);
 
-    if (dialogStatus === 'closed') {
-        $closeBtn.prop('disabled', true).text('Закрыт');
-    } else {
-        $closeBtn.prop('disabled', false).text('Закрыть');
+        if (dialogStatus === 'closed') {
+            $closeBtn.prop('disabled', true).text('Закрыт');
+        } else {
+            $closeBtn.prop('disabled', false).text('Закрыть');
+        }
     }
-}
 
     function getDialogStatusMeta(status) {
         const s = String(status || '').toLowerCase();
@@ -619,6 +623,26 @@
         setCloseButtonState();
     }
 
+    function resetAfterDelete() {
+        currentDialog = null;
+        lastMessageId = 0;
+        firstLoad = true;
+        dialogStatus = 'open';
+        lastSoundMessageId = 0;
+        lastMarkedReadId = 0;
+        geoRetryCount = 0;
+
+        stopGeoRetry();
+
+        messagesBox.html('<div class="cw-empty">Выберите диалог слева</div>');
+        messagesBox.removeData('cw-msg-map');
+        geoBox.text('Выберите диалог');
+
+        setInputEnabled(false);
+        setCloseButtonState();
+        loadDialogs();
+    }
+
     function openDialog(id) {
         currentDialog = Number(id);
         resetCurrentDialogView();
@@ -631,6 +655,31 @@
         loadGeo(false);
         loadMessages();
         loadDialogs();
+    }
+
+    function openDeleteModal() {
+        if (!currentDialog || !$deleteModal.length) return;
+
+        $deleteModal
+            .addClass('is-open')
+            .attr('aria-hidden', 'false')
+            .stop(true, true)
+            .hide()
+            .fadeIn(180);
+
+        $('body').addClass('cw-modal-open');
+    }
+
+    function closeDeleteModal() {
+        if (!$deleteModal.length) return;
+
+        $deleteModal
+            .removeClass('is-open')
+            .attr('aria-hidden', 'true')
+            .stop(true, true)
+            .fadeOut(180);
+
+        $('body').removeClass('cw-modal-open');
     }
 
     function sendMessage() {
@@ -788,27 +837,58 @@
 
         $deleteBtn.on('click', function () {
             if (!currentDialog) return;
-            if (!confirm('Удалить диалог?')) return;
+            openDeleteModal();
+        });
 
-            $.post(api + `dialogs/${currentDialog}/delete`, function () {
-                currentDialog = null;
-                lastMessageId = 0;
-                firstLoad = true;
-                dialogStatus = 'open';
-                lastSoundMessageId = 0;
-                lastMarkedReadId = 0;
-                geoRetryCount = 0;
+        $deleteCancelBtn.on('click', function () {
+            closeDeleteModal();
+        });
 
-                stopGeoRetry();
+        $deleteConfirmBtn.on('click', function () {
+            if (!currentDialog) {
+                closeDeleteModal();
+                return;
+            }
 
-                messagesBox.html('<div class="cw-empty">Выберите диалог слева</div>');
-                messagesBox.removeData('cw-msg-map');
-                geoBox.text('Выберите диалог');
+            $deleteConfirmBtn.prop('disabled', true);
+            $deleteCancelBtn.prop('disabled', true);
 
-                setInputEnabled(false);
-                setCloseButtonState();
-                loadDialogs();
+            $.ajax({
+                url: api + `dialogs/${currentDialog}/delete`,
+                method: 'POST',
+                success(res) {
+                    closeDeleteModal();
+                    resetAfterDelete();
+
+                    if (res && typeof res.deleted_files !== 'undefined') {
+                        console.log('CW: dialog deleted, files removed:', res.deleted_files);
+                    }
+                },
+                error(xhr) {
+                    let msg = 'Не удалось удалить диалог';
+
+                    if (xhr && xhr.responseJSON && (xhr.responseJSON.details || xhr.responseJSON.error)) {
+                        msg += ': ' + (xhr.responseJSON.details || xhr.responseJSON.error);
+                    }
+
+                    alert(msg);
+                },
+                complete() {
+                    $deleteConfirmBtn.prop('disabled', false);
+                    $deleteCancelBtn.prop('disabled', false);
+                }
             });
+        });
+
+        $deleteModal.on('click', function (e) {
+            if ($(e.target).closest('.cw-delete-modal-dialog').length) return;
+            closeDeleteModal();
+        });
+
+        $(document).on('keydown', function (e) {
+            if (e.key === 'Escape' && $deleteModal.hasClass('is-open')) {
+                closeDeleteModal();
+            }
         });
 
         pollTimer = setInterval(function () {
