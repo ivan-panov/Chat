@@ -633,3 +633,27 @@
         right: -10px;
     }
 }
+
+#cw-open-btn.cw-loading {
+    opacity: 0.92;
+}
+
+#cw-open-btn.cw-loading::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.35);
+    border-top-color: #ffffff;
+    animation: cw-chat-spin 0.9s linear infinite;
+    pointer-events: none;
+}
+
+@keyframes cw-chat-spin {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
