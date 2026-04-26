@@ -127,10 +127,10 @@ function cw_tg_direct_php_binary(): string {
     return 'php';
 }
 
-function cw_tg_direct_spawn_worker(): void {
+function cw_tg_direct_spawn_worker(): bool {
     $worker = __DIR__ . '/tg-worker.php';
     if (!is_file($worker)) {
-        return;
+        return false;
     }
 
     $php = cw_tg_direct_php_binary();
@@ -138,14 +138,36 @@ function cw_tg_direct_spawn_worker(): void {
 
     if (function_exists('exec')) {
         @exec($cmd);
-        return;
+        return true;
     }
 
     if (function_exists('popen')) {
         $p = @popen($cmd, 'r');
         if (is_resource($p)) {
             @pclose($p);
+            return true;
         }
+    }
+
+    return false;
+}
+
+function cw_tg_direct_process_queue_after_response(): void {
+    ignore_user_abort(true);
+
+    if (function_exists('fastcgi_finish_request')) {
+        @fastcgi_finish_request();
+    }
+
+    $wp_load = __DIR__ . '/../../../wp-load.php';
+    if (!is_file($wp_load)) {
+        return;
+    }
+
+    require_once $wp_load;
+
+    if (function_exists('cw_tg_process_file_queue')) {
+        cw_tg_process_file_queue(25);
     }
 }
 
@@ -166,8 +188,13 @@ $header_secret = (string) ($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'] ?? '
 $queued = cw_tg_direct_enqueue_update($update, $header_secret, $raw);
 
 if ($queued) {
-    cw_tg_direct_spawn_worker();
+    $spawned = cw_tg_direct_spawn_worker();
     cw_tg_direct_send_response(cw_tg_direct_callback_payload($update, 'Команда принята'));
+
+    if (!$spawned) {
+        cw_tg_direct_process_queue_after_response();
+    }
+
     exit;
 }
 
