@@ -1932,7 +1932,7 @@ function cw_max_get_dialog_history_text(int $dialog_id, int $limit = 12): string
 
     $dialog = $wpdb->get_row(
         $wpdb->prepare(
-            "SELECT geo_org, geo_ip, geo_browser
+            "SELECT geo_city, geo_org, geo_ip, geo_browser
              FROM {$tableD}
              WHERE id = %d",
             $dialog_id
@@ -1959,6 +1959,7 @@ function cw_max_get_dialog_history_text(int $dialog_id, int $limit = 12): string
 
     $rows = array_reverse($rows);
 
+    $city = trim((string) ($dialog['geo_city'] ?? ''));
     $provider = trim((string) ($dialog['geo_org'] ?? ''));
     $ip = trim((string) ($dialog['geo_ip'] ?? ''));
     $tz = cw_max_extract_timezone_from_browser_label((string) ($dialog['geo_browser'] ?? ''));
@@ -1966,8 +1967,12 @@ function cw_max_get_dialog_history_text(int $dialog_id, int $limit = 12): string
     $lines = [];
     $lines[] = '📜 История диалога #' . intval($dialog_id);
 
-    if ($ip !== '' || $provider !== '' || $tz !== '') {
+    if ($city !== '' || $ip !== '' || $provider !== '' || $tz !== '') {
         $lines[] = '';
+
+        if ($city !== '') {
+            $lines[] = 'Город: ' . $city;
+        }
 
         if ($ip !== '') {
             $lines[] = 'IP: ' . $ip;
@@ -2019,10 +2024,12 @@ function cw_max_get_dialog_history_text(int $dialog_id, int $limit = 12): string
         array_pop($lines);
     }
 
-    $result = implode("\n", $lines);
+    $result = implode("
+", $lines);
 
-    if (mb_strlen($result) > 3900) {
-        $result = mb_substr($result, 0, 3900) . "\n...";
+    if (mb_strlen($result) > 3500) {
+        $result = mb_substr($result, 0, 3900) . "
+...";
     }
 
     return $result;

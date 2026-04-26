@@ -25,6 +25,10 @@ function cw_operator_panel_page() {
             <div class="cw-column-right">
                 <div id="cw-geo-box">Выберите диалог</div>
 
+                <div id="cw-contact-card">
+                    <div class="cw-contact-card-empty">Выберите диалог</div>
+                </div>
+
                 <div id="cw-messages-box">
                     <div class="cw-empty">Выберите диалог слева</div>
                 </div>

@@ -47,11 +47,14 @@
     const SOUND_UNLOCK_KEY = 'cw_sound_unlocked';
     const SOUND_LAST_OPERATOR_KEY = 'cw_last_notified_operator_message_id';
     const READ_SYNC_KEY = 'cw_last_synced_read_message_id';
+    const CONSENT_PLACEHOLDER_ID = 'cw-consent-placeholder';
 
     let soundUnlocked = localStorage.getItem(SOUND_UNLOCK_KEY) === '1';
     let soundUnlocking = false;
     let lastNotifiedOperatorMessageId = Number(localStorage.getItem(SOUND_LAST_OPERATOR_KEY) || 0);
     let lastSyncedReadMsg = Number(localStorage.getItem(READ_SYNC_KEY) || 0);
+    let shouldForceScrollOnNextRender = false;
+    let autoScrollPinned = true;
 
     function updateNewDialogBtn() {
         if (isCreatingDialog) {
@@ -129,16 +132,82 @@
 
     function scrollToBottom() {
         const el = chatWindow[0];
-        if (el) {
+        if (!el) return;
+
+        autoScrollPinned = true;
+        el.scrollTop = el.scrollHeight;
+
+        window.requestAnimationFrame(function () {
             el.scrollTop = el.scrollHeight;
+            autoScrollPinned = true;
+        });
+
+        setTimeout(function () {
+            el.scrollTop = el.scrollHeight;
+            autoScrollPinned = true;
+        }, 60);
+    }
+
+    function getConsentMessage() {
+        return String(api.consent_message || '').trim();
+    }
+
+    function hasRealUserMessages(messages) {
+        if (!Array.isArray(messages)) return false;
+
+        return messages.some(function (m) {
+            return Number(m && m.is_operator) !== 1;
+        });
+    }
+
+    function hasPendingUserMessages() {
+        return Object.keys(pendingMessageMap).length > 0;
+    }
+
+    function removeConsentPlaceholder() {
+        chatWindow.find('.cw-msg[data-id="' + CONSENT_PLACEHOLDER_ID + '"]').remove();
+    }
+
+    function shouldShowConsentPlaceholder() {
+        if (!getConsentMessage()) return false;
+        if (currentDialogStatus === 'closed') return false;
+        if (hasPendingUserMessages()) return false;
+
+        return !hasRealUserMessages(messageCache);
+    }
+
+    function syncConsentPlaceholder() {
+        if (!shouldShowConsentPlaceholder()) {
+            removeConsentPlaceholder();
+            return;
         }
+
+        if (chatWindow.find('.cw-msg[data-id="' + CONSENT_PLACEHOLDER_ID + '"]').length) {
+            return;
+        }
+
+        chatWindow.prepend(buildMessageHtml({
+            id: CONSENT_PLACEHOLDER_ID,
+            message: '[system]' + getConsentMessage(),
+            is_operator: 1,
+            unread: 0,
+            created_at: ''
+        }));
+    }
+
+    function getBottomGap() {
+        const el = chatWindow[0];
+        if (!el) return 0;
+
+        return Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
     }
 
     function isNearBottom(threshold = 24) {
-        const el = chatWindow[0];
-        if (!el) return true;
+        return getBottomGap() <= threshold;
+    }
 
-        return (el.scrollHeight - el.scrollTop - el.clientHeight) <= threshold;
+    function updateAutoScrollPinned() {
+        autoScrollPinned = isNearBottom(140);
     }
 
     function isChatOpen() {
@@ -245,10 +314,12 @@
         localStorage.setItem('cw_last_read_message_id', '0');
 
         currentDialogStatus = null;
+        autoScrollPinned = true;
         updateNewDialogBtn();
 
         chatWindow.empty();
         badge.hide();
+        syncConsentPlaceholder();
     }
 
     function switchToDialog(newDialogId) {
@@ -267,8 +338,14 @@
     }
 
     function openChat() {
-        chatBox.fadeIn(200);
+        shouldForceScrollOnNextRender = true;
+
+        chatBox.stop(true, true).fadeIn(200, function () {
+            scrollToBottom();
+        });
+
         badge.hide();
+        syncConsentPlaceholder();
 
         if (lastMessageId > lastReadMsg) {
             lastReadMsg = lastMessageId;
@@ -276,7 +353,11 @@
             syncReadStatus();
         }
 
-        scrollToBottom();
+        if (dialogId) {
+            pollMessages(true);
+        } else {
+            scrollToBottom();
+        }
     }
 
     function closeChat() {
@@ -334,6 +415,7 @@
                 localStorage.setItem('cw_last_read_message_id', '0');
 
                 currentDialogStatus = 'open';
+                autoScrollPinned = true;
                 updateNewDialogBtn();
 
                 chatWindow.empty();
@@ -435,6 +517,8 @@
     }
 
     function addPendingTextMessage(text) {
+        removeConsentPlaceholder();
+
         const pendingId = nextPendingId();
         const pendingMessage = {
             id: pendingId,
@@ -462,6 +546,8 @@
     }
 
     function addPendingFileMessage(file) {
+        removeConsentPlaceholder();
+
         const pendingId = nextPendingId();
         const fakeUrl = URL.createObjectURL(file);
 
@@ -704,7 +790,7 @@
             return `
                 <div class="cw-msg ${cls}${pendingClass}" data-id="${escapeHtml(id)}"${objectUrlAttr}>
                     <div class="cw-bubble">
-                        <img src="${escapeHtml(safeUrl)}" style="max-width:180px;border-radius:8px;" alt="">
+                        <img src="${escapeHtml(safeUrl)}" style="max-width:60px;border-radius:8px;" alt="">
                         ${renderMeta(m)}
                     </div>
                 </div>
@@ -806,6 +892,75 @@
         return true;
     }
 
+    function updateMessageStatusNode($msg, m) {
+        const $status = $msg.find('.cw-msg-status').first();
+        if (!$status.length) return;
+
+        const isOperator = Number(m.is_operator) === 1;
+        const isRead = Number(m.unread) === 0;
+        const label = isOperator
+            ? (isRead ? 'Прочитано вами' : 'Доставлено вам')
+            : (isRead ? 'Прочитано' : 'Доставлено');
+
+        $status
+            .removeClass('is-sent is-read')
+            .addClass(isRead ? 'is-read' : 'is-sent')
+            .attr('title', label)
+            .attr('aria-label', label)
+            .text(isRead ? '✓✓' : '✓');
+    }
+
+    function markOperatorMessagesReadLocally(lastId) {
+        const targetId = Number(lastId || 0);
+        if (!targetId) return;
+
+        let changed = false;
+
+        Object.keys(renderedMessageMap).forEach(function (key) {
+            const id = Number(key || 0);
+            const m = renderedMessageMap[key];
+            const text = String((m && m.message) || '');
+
+            if (
+                id > 0 &&
+                id <= targetId &&
+                m &&
+                Number(m.is_operator) === 1 &&
+                Number(m.unread) === 1 &&
+                !text.startsWith('[system]')
+            ) {
+                m.unread = 0;
+                changed = true;
+
+                const $msg = chatWindow.find(`.cw-msg[data-id="${id}"]`);
+                if ($msg.length) {
+                    updateMessageStatusNode($msg, m);
+                }
+            }
+        });
+
+        if (changed && Array.isArray(messageCache)) {
+            messageCache = messageCache.map(function (m) {
+                const id = Number(m.id || 0);
+                const text = String(m.message || '');
+
+                if (
+                    id > 0 &&
+                    id <= targetId &&
+                    Number(m.is_operator) === 1 &&
+                    Number(m.unread) === 1 &&
+                    !text.startsWith('[system]')
+                ) {
+                    const copy = Object.assign({}, m);
+                    copy.unread = 0;
+                    return copy;
+                }
+
+                return m;
+            });
+        }
+    }
+
     function enrichMessagesForUi(messages) {
         const replyMap = getOperatorReplyAnchorMap(messages);
 
@@ -820,6 +975,7 @@
         if (!dialogId) {
             currentDialogStatus = null;
             updateNewDialogBtn();
+            syncConsentPlaceholder();
             return;
         }
 
@@ -835,8 +991,12 @@
                 if (requestedDialog !== String(dialogId)) return;
                 if (!Array.isArray(msgs)) return;
 
-                const nearBottomBefore = isNearBottom();
+                const bottomGapBeforeRender = getBottomGap();
+                const nearBottomBefore = bottomGapBeforeRender <= 140;
+                const forceScrollAfterRender = shouldForceScrollOnNextRender;
+                const stickToBottomBeforeRender = forceScrollAfterRender || autoScrollPinned || nearBottomBefore;
                 let hasNewMessages = false;
+                let hasNewOperatorMessages = false;
                 let shouldPlaySound = false;
                 let maxNewOperatorId = lastNotifiedOperatorMessageId;
                 const prevLastMessageId = lastMessageId;
@@ -855,16 +1015,15 @@
                         hasNewMessages = true;
                     }
 
-                    if (
-                        id > prevLastMessageId &&
-                        isOperator &&
-                        !isSystem &&
-                        isUserInactiveForSound()
-                    ) {
-                        maxNewOperatorId = Math.max(maxNewOperatorId, id);
+                    if (id > prevLastMessageId && isOperator && !isSystem) {
+                        hasNewOperatorMessages = true;
 
-                        if (id > lastNotifiedOperatorMessageId) {
-                            shouldPlaySound = true;
+                        if (isUserInactiveForSound()) {
+                            maxNewOperatorId = Math.max(maxNewOperatorId, id);
+
+                            if (id > lastNotifiedOperatorMessageId) {
+                                shouldPlaySound = true;
+                            }
                         }
                     }
 
@@ -874,18 +1033,29 @@
                 const s = (xhr.getResponseHeader('X-Dialog-Status') || '').toLowerCase();
                 currentDialogStatus = s || 'open';
                 updateNewDialogBtn();
+                syncConsentPlaceholder();
 
                 if (isChatOpen() && !document.hidden) {
                     if (lastMessageId > lastReadMsg) {
                         lastReadMsg = lastMessageId;
                         localStorage.setItem('cw_last_read_message_id', String(lastReadMsg));
+                        markOperatorMessagesReadLocally(lastReadMsg);
                         syncReadStatus();
                     }
 
-                    if (hasNewMessages && nearBottomBefore) {
+                    const shouldScrollToLatest = hasNewMessages && (
+                        stickToBottomBeforeRender ||
+                        (hasNewOperatorMessages && bottomGapBeforeRender <= 220)
+                    );
+
+                    if (shouldScrollToLatest) {
                         scrollToBottom();
+                    } else {
+                        updateAutoScrollPinned();
                     }
                 }
+
+                shouldForceScrollOnNextRender = false;
 
                 preparedMessages.forEach(function (m) {
                     if (
@@ -960,6 +1130,10 @@
 
         $(window).on('focus', function () {
             if (dialogId) {
+                if (isChatOpen() && autoScrollPinned) {
+                    shouldForceScrollOnNextRender = true;
+                }
+
                 pollMessages(true);
             }
         });
@@ -967,11 +1141,17 @@
         $(document).on('visibilitychange', function () {
             if (document.visibilityState === 'visible' && dialogId) {
                 badge.hide();
+
+                if (isChatOpen() && autoScrollPinned) {
+                    shouldForceScrollOnNextRender = true;
+                }
+
                 pollMessages(true);
 
                 if (isChatOpen() && lastMessageId > lastReadMsg) {
                     lastReadMsg = lastMessageId;
                     localStorage.setItem('cw_last_read_message_id', String(lastReadMsg));
+                    markOperatorMessagesReadLocally(lastReadMsg);
                     syncReadStatus();
                 }
             }
@@ -1007,6 +1187,10 @@
         openBtn.on('click', function () {
             unlockSound();
             toggleChat();
+        });
+
+        chatWindow.on('scroll', function () {
+            updateAutoScrollPinned();
         });
 
         $('#cw-close').on('click', closeChat);

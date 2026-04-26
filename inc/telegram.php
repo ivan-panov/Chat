@@ -17,6 +17,19 @@ function cw_tg_get_webhook_secret(): string {
     return trim((string) get_option('cw_tg_webhook_secret', ''));
 }
 
+
+function cw_tg_direct_webhook_url(): string {
+    return plugins_url('tg-webhook.php', dirname(__FILE__));
+}
+
+function cw_tg_is_valid_webhook_secret(string $secret): bool {
+    if ($secret === '') {
+        return true;
+    }
+
+    return (bool) preg_match('/^[A-Za-z0-9_-]{1,256}$/', $secret);
+}
+
 function cw_tg_proxy_enabled(): bool {
     return (int) get_option('cw_tg_proxy_enabled', 0) === 1;
 }
@@ -52,10 +65,11 @@ function cw_tg_log_error(string $message): void {
 }
 
 function cw_tg_http_request(string $url, array $args = []) {
-    $method  = strtoupper((string) ($args['method'] ?? 'GET'));
-    $body    = $args['body'] ?? [];
-    $headers = (array) ($args['headers'] ?? []);
-    $timeout = max(1, intval($args['timeout'] ?? 25));
+    $method          = strtoupper((string) ($args['method'] ?? 'GET'));
+    $body            = $args['body'] ?? [];
+    $headers         = (array) ($args['headers'] ?? []);
+    $timeout         = max(1, intval($args['timeout'] ?? 25));
+    $connect_timeout = max(1, intval($args['connect_timeout'] ?? min(20, $timeout)));
 
     $use_proxy = cw_tg_proxy_enabled() && cw_tg_is_telegram_url($url);
 
@@ -95,7 +109,7 @@ function cw_tg_http_request(string $url, array $args = []) {
         curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $connect_timeout);
         curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
@@ -159,7 +173,7 @@ function cw_tg_http_request(string $url, array $args = []) {
     return wp_remote_request($url, $request_args);
 }
 
-function cw_tg_api_request(string $method, array $body = [], string $http_method = 'POST') {
+function cw_tg_api_request(string $method, array $body = [], string $http_method = 'POST', int $timeout = 25, int $connect_timeout = 20) {
     $token = cw_tg_get_token();
     if ($token === '') {
         return new WP_Error('cw_tg_no_token', 'Bot Token не заполнен.');
@@ -168,9 +182,10 @@ function cw_tg_api_request(string $method, array $body = [], string $http_method
     $response = cw_tg_http_request(
         "https://api.telegram.org/bot{$token}/{$method}",
         [
-            'method'  => $http_method,
-            'body'    => $body,
-            'timeout' => 25,
+            'method'          => $http_method,
+            'body'            => $body,
+            'timeout'         => $timeout,
+            'connect_timeout' => $connect_timeout,
         ]
     );
 
@@ -210,7 +225,7 @@ function cw_tg_api(string $method, array $body = []) {
 }
 
 function cw_tg_send(int $chat_id, string $text, $keyboard = null): void {
-    if ($chat_id <= 0) return;
+    if ($chat_id === 0) return;
 
     $body = [
         'chat_id'    => $chat_id,
@@ -228,7 +243,7 @@ function cw_tg_send(int $chat_id, string $text, $keyboard = null): void {
 }
 
 function cw_tg_send_photo(int $chat_id, $attachment_or_url, string $caption = '', $keyboard = null): void {
-    if ($chat_id <= 0 || empty($attachment_or_url)) return;
+    if ($chat_id === 0 || empty($attachment_or_url)) return;
 
     $photo_url = $attachment_or_url;
 
@@ -258,6 +273,84 @@ function cw_tg_send_photo(int $chat_id, $attachment_or_url, string $caption = ''
     }
 
     cw_tg_api('sendPhoto', $body);
+}
+
+
+function cw_tg_answer_callback_query(string $callback_id, string $text = '', bool $show_alert = false): void {
+    $callback_id = trim((string) $callback_id);
+    if ($callback_id === '') return;
+
+    $body = [
+        'callback_query_id' => $callback_id,
+        'show_alert'        => $show_alert ? 'true' : 'false',
+    ];
+
+    if ($text !== '') {
+        $body['text'] = mb_substr($text, 0, 200);
+    }
+
+    cw_tg_api('answerCallbackQuery', $body);
+}
+
+
+function cw_tg_callback_payload(string $callback_id, string $text = '', bool $show_alert = false): array {
+    $callback_id = trim((string) $callback_id);
+
+    $payload = [
+        'method'     => 'answerCallbackQuery',
+        'show_alert' => $show_alert,
+    ];
+
+    if ($callback_id !== '') {
+        $payload['callback_query_id'] = $callback_id;
+    }
+
+    if ($text !== '') {
+        $payload['text'] = mb_substr($text, 0, 200);
+    }
+
+    return $payload;
+}
+
+function cw_tg_callback_response(string $callback_id, string $text = '', bool $show_alert = false): WP_REST_Response {
+    return new WP_REST_Response(cw_tg_callback_payload($callback_id, $text, $show_alert), 200);
+}
+
+function cw_tg_finish_webhook_response_now($payload, int $status = 200): void {
+    if (!headers_sent()) {
+        status_header($status);
+        nocache_headers();
+        header('Content-Type: application/json; charset=' . get_option('blog_charset'));
+        header('Connection: close');
+    }
+
+    $json = wp_json_encode($payload);
+    if ($json === false) {
+        $json = '{"status":"ok"}';
+    }
+
+    echo $json;
+
+    if (function_exists('fastcgi_finish_request')) {
+        @fastcgi_finish_request();
+        return;
+    }
+
+    while (ob_get_level() > 0) {
+        @ob_end_flush();
+    }
+    @flush();
+}
+
+function cw_tg_is_authorized_callback(array $callback, int $admin_chat_id): bool {
+    if ($admin_chat_id === 0) {
+        return false;
+    }
+
+    $from_id = intval($callback['from']['id'] ?? 0);
+    $chat_id = intval($callback['message']['chat']['id'] ?? 0);
+
+    return $from_id === $admin_chat_id || $chat_id === $admin_chat_id;
 }
 
 function cw_tg_escape_html_text(string $text): string {
@@ -393,7 +486,7 @@ function cw_tg_get_dialog_history_text(int $dialog_id, int $limit = 12): string 
 
     $dialog = $wpdb->get_row(
         $wpdb->prepare(
-            "SELECT geo_org, geo_ip, geo_browser
+            "SELECT geo_city, geo_org, geo_ip, geo_browser
              FROM {$tableD}
              WHERE id = %d",
             $dialog_id
@@ -420,6 +513,7 @@ function cw_tg_get_dialog_history_text(int $dialog_id, int $limit = 12): string 
 
     $rows = array_reverse($rows);
 
+    $city = trim((string) ($dialog['geo_city'] ?? ''));
     $provider = trim((string) ($dialog['geo_org'] ?? ''));
     $ip = trim((string) ($dialog['geo_ip'] ?? ''));
     $tz = cw_tg_extract_timezone_from_browser_label((string) ($dialog['geo_browser'] ?? ''));
@@ -427,8 +521,12 @@ function cw_tg_get_dialog_history_text(int $dialog_id, int $limit = 12): string 
     $lines = [];
     $lines[] = '📜 <b>История диалога #' . intval($dialog_id) . '</b>';
 
-    if ($ip !== '' || $provider !== '' || $tz !== '') {
+    if ($city !== '' || $ip !== '' || $provider !== '' || $tz !== '') {
         $lines[] = '';
+
+        if ($city !== '') {
+            $lines[] = '<b>Город:</b> ' . esc_html($city);
+        }
 
         if ($ip !== '') {
             $lines[] = '<b>IP:</b> ' . esc_html($ip);
@@ -539,7 +637,7 @@ function cw_tg_notify_operator(int $dialog_id, string $message): void {
     if (!cw_tg_enabled()) return;
 
     $admin_chat = cw_tg_get_admin_chat();
-    if ($admin_chat <= 0) return;
+    if ($admin_chat === 0) return;
 
     $trimmed = trim((string) $message);
 
@@ -652,6 +750,362 @@ function cw_tg_verify_async_signature(int $message_id, int $timestamp, string $s
     return hash_equals($expected, $signature);
 }
 
+
+function cw_tg_build_callback_signature(string $action, int $dialog_id, int $timestamp): string {
+    return hash_hmac('sha256', sanitize_key($action) . '|' . intval($dialog_id) . '|' . intval($timestamp), cw_tg_get_async_secret());
+}
+
+function cw_tg_verify_callback_signature(string $action, int $dialog_id, int $timestamp, string $signature): bool {
+    $action = sanitize_key($action);
+    $signature = trim($signature);
+
+    if ($action === '' || $dialog_id <= 0 || $timestamp <= 0 || $signature === '') {
+        return false;
+    }
+
+    if (abs(time() - $timestamp) > 300) {
+        return false;
+    }
+
+    $expected = cw_tg_build_callback_signature($action, $dialog_id, $timestamp);
+
+    return hash_equals($expected, $signature);
+}
+
+function cw_tg_register_post_response_queue_runner(): void {
+    static $registered = false;
+    if ($registered) {
+        return;
+    }
+
+    $registered = true;
+
+    register_shutdown_function(function () {
+        global $cw_tg_post_response_jobs;
+
+        ignore_user_abort(true);
+
+        if (function_exists('fastcgi_finish_request')) {
+            @fastcgi_finish_request();
+        }
+
+        $jobs = is_array($cw_tg_post_response_jobs) ? $cw_tg_post_response_jobs : [];
+        $cw_tg_post_response_jobs = [];
+
+        $processed = 0;
+        foreach ($jobs as $job) {
+            if ($processed >= 25) {
+                break;
+            }
+
+            $type = sanitize_key($job['type'] ?? '');
+            $payload = is_array($job['payload'] ?? null) ? $job['payload'] : [];
+
+            if ($type === 'callback_action') {
+                cw_tg_process_callback_action(
+                    sanitize_key((string) ($payload['action'] ?? '')),
+                    intval($payload['dialog'] ?? 0)
+                );
+            } elseif ($type === 'incoming_message') {
+                $message = is_array($payload['message'] ?? null) ? $payload['message'] : [];
+                cw_tg_process_incoming_message_job($message);
+            }
+
+            $processed++;
+        }
+    });
+}
+
+function cw_tg_add_queue_job(string $type, array $payload): bool {
+    $type = sanitize_key($type);
+    if ($type === '') {
+        return false;
+    }
+
+    global $cw_tg_post_response_jobs;
+    if (!isset($cw_tg_post_response_jobs) || !is_array($cw_tg_post_response_jobs)) {
+        $cw_tg_post_response_jobs = [];
+    }
+
+    $cw_tg_post_response_jobs[] = [
+        'type'       => $type,
+        'payload'    => $payload,
+        'created_at' => time(),
+    ];
+
+    cw_tg_register_post_response_queue_runner();
+
+    return true;
+}
+
+function cw_tg_schedule_callback_action(string $action, int $dialog_id): void {
+    $action = sanitize_key($action);
+    $dialog_id = intval($dialog_id);
+
+    if ($action === '' || $dialog_id <= 0) return;
+
+    cw_tg_add_queue_job('callback_action', [
+        'action' => $action,
+        'dialog' => $dialog_id,
+    ]);
+}
+
+function cw_tg_queue_incoming_message_job(array $message): bool {
+    return cw_tg_add_queue_job('incoming_message', [
+        'message' => $message,
+    ]);
+}
+
+function cw_tg_process_queue(): void {
+    // Backward compatibility stub. Telegram webhook updates are processed by tg-worker.php.
+    if (function_exists('cw_tg_process_file_queue')) {
+        cw_tg_process_file_queue(25);
+    }
+}
+
+function cw_tg_file_queue_dir(): string {
+    $dir = '';
+
+    if (function_exists('wp_upload_dir')) {
+        $upload = wp_upload_dir(null, false);
+        if (is_array($upload) && !empty($upload['basedir'])) {
+            $dir = trailingslashit((string) $upload['basedir']) . 'cw-tg-queue';
+        }
+    }
+
+    if ($dir === '' && defined('WP_CONTENT_DIR')) {
+        $dir = trailingslashit(WP_CONTENT_DIR) . 'uploads/cw-tg-queue';
+    }
+
+    if ($dir !== '') {
+        if (!is_dir($dir)) {
+            wp_mkdir_p($dir);
+        }
+
+        if (is_dir($dir)) {
+            @file_put_contents($dir . '/index.php', "<?php\n// Silence is golden.\n");
+            @file_put_contents($dir . '/.htaccess', "Deny from all\n");
+            return $dir;
+        }
+    }
+
+    $fallback = rtrim(sys_get_temp_dir(), '/\\') . '/cw-tg-queue-' . md5(dirname(__DIR__));
+    if (!is_dir($fallback)) {
+        @mkdir($fallback, 0755, true);
+    }
+    return $fallback;
+}
+
+function cw_tg_process_file_queue(int $limit = 25): array {
+    $limit = max(1, min(100, intval($limit)));
+    $dir = cw_tg_file_queue_dir();
+
+    if ($dir === '' || !is_dir($dir)) {
+        return ['status' => 'queue_dir_missing'];
+    }
+
+    $queue_file = $dir . '/queue.jsonl';
+    $lock_file  = $dir . '/worker.lock';
+
+    if (!file_exists($queue_file)) {
+        return ['status' => 'empty', 'processed' => 0, 'remaining' => 0];
+    }
+
+    $lock = @fopen($lock_file, 'c');
+    if (!$lock) {
+        return ['status' => 'lock_open_failed'];
+    }
+
+    if (!@flock($lock, LOCK_EX | LOCK_NB)) {
+        @fclose($lock);
+        return ['status' => 'locked'];
+    }
+
+    $lines = @file($queue_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if (!is_array($lines) || empty($lines)) {
+        @file_put_contents($queue_file, '');
+        @flock($lock, LOCK_UN);
+        @fclose($lock);
+        return ['status' => 'empty', 'processed' => 0, 'remaining' => 0];
+    }
+
+    $batch = array_slice($lines, 0, $limit);
+    $remaining = array_slice($lines, $limit);
+    @file_put_contents($queue_file, empty($remaining) ? '' : implode("\n", $remaining) . "\n", LOCK_EX);
+
+    @flock($lock, LOCK_UN);
+    @fclose($lock);
+
+    $processed = 0;
+    $errors = 0;
+
+    foreach ($batch as $line) {
+        $job = json_decode((string) $line, true);
+        if (!is_array($job) || !isset($job['update']) || !is_array($job['update'])) {
+            $errors++;
+            continue;
+        }
+
+        $header_secret = (string) ($job['header_secret'] ?? '');
+
+        try {
+            if (function_exists('cw_tg_webhook_process_update_after_ack')) {
+                cw_tg_webhook_process_update_after_ack($job['update'], $header_secret);
+                $processed++;
+            } else {
+                $errors++;
+            }
+        } catch (Throwable $e) {
+            $errors++;
+            if (function_exists('cw_tg_log_error')) {
+                cw_tg_log_error('Queue worker error: ' . $e->getMessage());
+            }
+        }
+    }
+
+    return [
+        'status'    => 'processed',
+        'processed' => $processed,
+        'errors'    => $errors,
+        'remaining' => count($remaining),
+    ];
+}
+
+function cw_tg_get_webhook_ip(): string {
+    return '';
+}
+
+function cw_tg_async_endpoint_path(string $route): string {
+    $route = '/' . ltrim($route, '/');
+    $url = rest_url('cw/v1' . $route);
+    $path = (string) wp_parse_url($url, PHP_URL_PATH);
+    $query = (string) wp_parse_url($url, PHP_URL_QUERY);
+
+    if ($path === '') {
+        $path = '/wp-json/cw/v1' . $route;
+    }
+
+    if ($query !== '') {
+        $path .= '?' . $query;
+    }
+
+    return $path;
+}
+
+function cw_tg_fire_and_forget_post(string $route, array $body, float $timeout = 0.35): bool {
+    $home = home_url('/');
+    $scheme = strtolower((string) wp_parse_url($home, PHP_URL_SCHEME));
+    $host = strtolower((string) wp_parse_url($home, PHP_URL_HOST));
+
+    if ($host === '') {
+        return false;
+    }
+
+    $is_https = $scheme !== 'http';
+    $port = $is_https ? 443 : 80;
+    $connect_host = cw_tg_get_webhook_ip();
+    if ($connect_host === '') {
+        $connect_host = $host;
+    }
+
+    $path = cw_tg_async_endpoint_path($route);
+    $payload = http_build_query($body, '', '&');
+
+    $headers = "POST {$path} HTTP/1.1\r\n";
+    $headers .= "Host: {$host}\r\n";
+    $headers .= "User-Agent: CW-Telegram-Async/1.0\r\n";
+    $headers .= "Content-Type: application/x-www-form-urlencoded; charset=UTF-8\r\n";
+    $headers .= "Content-Length: " . strlen($payload) . "\r\n";
+    $headers .= "Connection: Close\r\n\r\n";
+
+    $context_options = [];
+    if ($is_https) {
+        $context_options['ssl'] = [
+            'verify_peer'       => false,
+            'verify_peer_name'  => false,
+            'SNI_enabled'       => true,
+            'SNI_server_name'   => $host,
+            'peer_name'         => $host,
+        ];
+    }
+
+    $context = stream_context_create($context_options);
+    $target = ($is_https ? 'ssl://' : 'tcp://') . $connect_host . ':' . $port;
+    $errno = 0;
+    $errstr = '';
+    $fp = @stream_socket_client($target, $errno, $errstr, max(0.05, $timeout), STREAM_CLIENT_CONNECT, $context);
+
+    if (!$fp) {
+        cw_tg_log_error('Async socket dispatch failed: ' . $errstr . ' (' . $errno . ')');
+        return false;
+    }
+
+    stream_set_timeout($fp, 1);
+    $request = $headers . $payload;
+    $written = @fwrite($fp, $request);
+    @fflush($fp);
+    @fclose($fp);
+
+    return $written !== false && $written > 0;
+}
+
+function cw_tg_dispatch_callback_action_async(string $action, int $dialog_id): bool {
+    if (!cw_tg_enabled()) return false;
+
+    $action = sanitize_key($action);
+    $dialog_id = intval($dialog_id);
+
+    if ($action === '' || $dialog_id <= 0) return false;
+
+    $timestamp = time();
+    $signature = cw_tg_build_callback_signature($action, $dialog_id, $timestamp);
+
+    return cw_tg_fire_and_forget_post('/tg-callback', [
+        'action' => $action,
+        'dialog' => $dialog_id,
+        'ts'     => $timestamp,
+        'sig'    => $signature,
+    ], 0.35);
+}
+
+function cw_tg_build_incoming_signature(string $payload, int $timestamp): string {
+    return hash_hmac('sha256', $payload . '|' . intval($timestamp), cw_tg_get_async_secret());
+}
+
+function cw_tg_verify_incoming_signature(string $payload, int $timestamp, string $signature): bool {
+    $signature = trim($signature);
+
+    if ($payload === '' || $timestamp <= 0 || $signature === '') {
+        return false;
+    }
+
+    if (abs(time() - $timestamp) > 300) {
+        return false;
+    }
+
+    $expected = cw_tg_build_incoming_signature($payload, $timestamp);
+
+    return hash_equals($expected, $signature);
+}
+
+function cw_tg_dispatch_incoming_message_async(array $message): bool {
+    if (!cw_tg_enabled()) return false;
+
+    $payload = wp_json_encode($message);
+    if (!is_string($payload) || $payload === '') {
+        return false;
+    }
+
+    $timestamp = time();
+    $signature = cw_tg_build_incoming_signature($payload, $timestamp);
+
+    return cw_tg_fire_and_forget_post('/tg-incoming', [
+        'message' => $payload,
+        'ts'      => $timestamp,
+        'sig'     => $signature,
+    ], 0.35);
+}
+
 function cw_tg_process_message_notification(int $message_id): void {
     if (!cw_tg_enabled()) return;
     if ($message_id <= 0) return;
@@ -725,7 +1179,7 @@ function cw_tg_dispatch_message_notification_async(int $message_id): bool {
     if (!cw_tg_enabled()) return false;
     if ($message_id <= 0) return false;
     if (cw_tg_get_token() === '') return false;
-    if (cw_tg_get_admin_chat() <= 0) return false;
+    if (cw_tg_get_admin_chat() === 0) return false;
 
     $timestamp = time();
     $signature = cw_tg_build_async_signature($message_id, $timestamp);
@@ -833,6 +1287,18 @@ add_action('rest_api_init', function () {
         'callback' => 'cw_tg_async_notify_handler',
         'permission_callback' => '__return_true',
     ]);
+
+    register_rest_route('cw/v1', '/tg-callback', [
+        'methods'  => ['POST'],
+        'callback' => 'cw_tg_async_callback_handler',
+        'permission_callback' => '__return_true',
+    ]);
+
+    register_rest_route('cw/v1', '/tg-incoming', [
+        'methods'  => ['POST'],
+        'callback' => 'cw_tg_async_incoming_handler',
+        'permission_callback' => '__return_true',
+    ]);
 });
 
 function cw_tg_async_notify_handler(WP_REST_Request $r) {
@@ -853,6 +1319,49 @@ function cw_tg_async_notify_handler(WP_REST_Request $r) {
     return ['status' => 'processed'];
 }
 
+
+function cw_tg_async_callback_handler(WP_REST_Request $r) {
+    if (!cw_tg_enabled()) {
+        return new WP_REST_Response(['status' => 'integration_disabled'], 200);
+    }
+
+    $action = sanitize_key((string) $r->get_param('action'));
+    $dialog = intval($r->get_param('dialog'));
+    $timestamp = intval($r->get_param('ts'));
+    $signature = (string) $r->get_param('sig');
+
+    if (!cw_tg_verify_callback_signature($action, $dialog, $timestamp, $signature)) {
+        return new WP_REST_Response(['error' => 'forbidden'], 403);
+    }
+
+    $result = cw_tg_process_callback_action($action, $dialog);
+
+    return new WP_REST_Response($result, 200);
+}
+
+function cw_tg_async_incoming_handler(WP_REST_Request $r) {
+    if (!cw_tg_enabled()) {
+        return new WP_REST_Response(['status' => 'integration_disabled'], 200);
+    }
+
+    $payload = (string) $r->get_param('message');
+    $timestamp = intval($r->get_param('ts'));
+    $signature = (string) $r->get_param('sig');
+
+    if (!cw_tg_verify_incoming_signature($payload, $timestamp, $signature)) {
+        return new WP_REST_Response(['error' => 'forbidden'], 403);
+    }
+
+    $message = json_decode($payload, true);
+    if (!is_array($message)) {
+        return new WP_REST_Response(['status' => 'invalid_message'], 200);
+    }
+
+    $result = cw_tg_process_incoming_message_job($message);
+
+    return new WP_REST_Response($result, 200);
+}
+
 function cw_tg_get_dialog_status(int $dialog_id): string {
     global $wpdb;
 
@@ -868,145 +1377,163 @@ function cw_tg_get_dialog_status(int $dialog_id): string {
     );
 }
 
-function cw_tg_webhook_handler(WP_REST_Request $r) {
+
+function cw_tg_process_incoming_message_job(array $msg): array {
     global $wpdb;
 
-    $admin  = cw_tg_get_admin_chat();
-    $secret = cw_tg_get_webhook_secret();
-
-    if ($secret !== '') {
-        $header_secret = $r->get_header('X-Telegram-Bot-Api-Secret-Token');
-        if (!$header_secret || !hash_equals($secret, $header_secret)) {
-            return new WP_REST_Response(['error' => 'forbidden'], 403);
-        }
-    }
-
-    if (!cw_tg_enabled()) {
-        return new WP_REST_Response(['status' => 'integration_disabled'], 200);
-    }
-
-    $update = $r->get_json_params();
-    if (!is_array($update)) {
-        return new WP_REST_Response(['status' => 'invalid'], 200);
+    $admin = cw_tg_get_admin_chat();
+    if ($admin === 0) {
+        return ['status' => 'no_admin_chat'];
     }
 
     $tableD = $wpdb->prefix . 'cw_dialogs';
     $tableM = $wpdb->prefix . 'cw_messages';
 
-    if (!empty($update['callback_query'])) {
-        $cb   = $update['callback_query'];
-        $data = $cb['data'] ?? '';
-        $from = intval($cb['from']['id'] ?? 0);
+    $from = intval($msg['from']['id'] ?? 0);
 
-        if ($from !== $admin) return ['status' => 'ignored'];
-
-        if (!preg_match('/^cw_(\w+)_(\d+)$/', (string) $data, $matches)) {
-            return ['status' => 'bad_callback'];
-        }
-
-        $action = sanitize_key($matches[1]);
-        $dialog = intval($matches[2]);
-
-        if ($action === 'close') {
-            $current_status = (string) $wpdb->get_var(
-                $wpdb->prepare(
-                    "SELECT status FROM {$tableD} WHERE id = %d",
-                    $dialog
-                )
-            );
-
-            if ($current_status === '') {
-                cw_tg_send($admin, "Диалог #{$dialog} не найден.");
-                return ['status' => 'dialog_not_found'];
-            }
-
-            if ($current_status === 'closed') {
-                cw_tg_send($admin, "Диалог #{$dialog} ранее закрыт.");
-                return ['status' => 'already_closed'];
-            }
-
-            if (function_exists('cw_mark_user_messages_read_by_operator')) {
-                cw_mark_user_messages_read_by_operator($dialog);
-            }
-
-            $wpdb->update($tableD, ['status' => 'closed'], ['id' => $dialog]);
-
-            $wpdb->insert($tableM, [
-                'dialog_id'   => $dialog,
-                'message'     => '[system]Диалог закрыт через Telegram.',
-                'is_operator' => 1,
-                'unread'      => 1,
-                'created_at'  => current_time('mysql'),
-            ]);
-
-            cw_tg_send($admin, "Диалог #{$dialog} закрыт.");
-        }
-
-        if ($action === 'reply') {
-            $current_status = cw_tg_get_dialog_status($dialog);
-
-            if ($current_status === '') {
-                delete_user_meta($admin, 'cw_reply_dialog');
-                cw_tg_send($admin, "Диалог #{$dialog} не найден.");
-                return ['status' => 'dialog_not_found'];
-            }
-
-            if ($current_status === 'closed') {
-                delete_user_meta($admin, 'cw_reply_dialog');
-                cw_tg_send($admin, "Диалог #{$dialog} ранее закрыт.");
-                return ['status' => 'already_closed'];
-            }
-
-            update_user_meta($admin, 'cw_reply_dialog', $dialog);
-            cw_tg_send($admin, "Отправьте сообщение или фото для диалога #{$dialog}");
-        }
-
-        if ($action === 'history') {
-            $history_text = cw_tg_get_dialog_history_text($dialog, 12);
-            cw_tg_send($admin, $history_text);
-        }
-
-        if ($action === 'stats') {
-            $stats_text = cw_tg_dialog_stats_text($dialog);
-            cw_tg_send($admin, $stats_text);
-        }
-
-        if ($action === 'sbp') {
-            $payment_url = 'https://qr.nspk.ru/AS1A005O0HP24U9I8P0AN5VA03QFOL1F?type=01&bank=100000000111&crc=30da';
-            $payment_text = '<a href="' . esc_url($payment_url) . '" target="_blank">СБП QR</a>';
-
-            if (function_exists('cw_mark_user_messages_read_by_operator')) {
-                cw_mark_user_messages_read_by_operator($dialog);
-            }
-
-            $wpdb->insert($tableM, [
-                'dialog_id'   => $dialog,
-                'message'     => $payment_text,
-                'is_operator' => 1,
-                'unread'      => 1,
-                'created_at'  => current_time('mysql'),
-            ]);
-
-            cw_tg_send($admin, "СБП QR отправлено в диалог #{$dialog}");
-        }
-
-        return ['status' => 'callback_processed'];
+    if ($from !== $admin) {
+        return ['status' => 'ignored'];
     }
 
-    if (!empty($update['message'])) {
-        $msg  = $update['message'];
-        $from = intval($msg['from']['id'] ?? 0);
+    $dialog = intval(get_user_meta($admin, 'cw_reply_dialog', true));
+    if ($dialog <= 0) {
+        cw_tg_send($admin, 'Сначала нажмите «✉ Ответить» у нужного диалога.');
+        return ['status' => 'no_dialog_selected'];
+    }
 
-        if ($from !== $admin) {
-            return ['status' => 'ignored'];
+    $current_status = cw_tg_get_dialog_status($dialog);
+
+    if ($current_status === '') {
+        delete_user_meta($admin, 'cw_reply_dialog');
+        cw_tg_send($admin, "Диалог #{$dialog} не найден.");
+        return ['status' => 'dialog_not_found'];
+    }
+
+    if ($current_status === 'closed') {
+        delete_user_meta($admin, 'cw_reply_dialog');
+        cw_tg_send($admin, "Диалог #{$dialog} ранее закрыт.");
+        return ['status' => 'already_closed'];
+    }
+
+    if (!empty($msg['text'])) {
+        $text = sanitize_text_field($msg['text']);
+
+        if (function_exists('cw_mark_user_messages_read_by_operator')) {
+            cw_mark_user_messages_read_by_operator($dialog);
         }
 
-        $dialog = intval(get_user_meta($admin, 'cw_reply_dialog', true));
-        if ($dialog <= 0) {
-            cw_tg_send($admin, 'Сначала нажмите «✉ Ответить» у нужного диалога.');
-            return ['status' => 'no_dialog_selected'];
+        $wpdb->insert($tableM, [
+            'dialog_id'   => $dialog,
+            'message'     => $text,
+            'is_operator' => 1,
+            'unread'      => 1,
+            'created_at'  => current_time('mysql'),
+        ]);
+
+        delete_user_meta($admin, 'cw_reply_dialog');
+        cw_tg_send($admin, "Ответ отправлен в диалог #{$dialog}");
+
+        return ['status' => 'text_processed'];
+    }
+
+    if (!empty($msg['photo']) && is_array($msg['photo'])) {
+        $photo = end($msg['photo']);
+        $file_id = $photo['file_id'] ?? '';
+
+        if ($file_id === '') {
+            cw_tg_send($admin, 'Не удалось получить file_id фото.');
+            return ['status' => 'photo_no_fileid'];
         }
 
+        $attach_id = cw_tg_download_photo_to_media($file_id);
+        if (!$attach_id) {
+            cw_tg_send($admin, 'Не удалось скачать или сохранить фото на сайт.');
+            return ['status' => 'photo_save_failed'];
+        }
+
+        $url = wp_get_attachment_url($attach_id);
+        if (!$url) {
+            cw_tg_send($admin, 'Фото сохранено, но URL не получен.');
+            return ['status' => 'photo_url_failed'];
+        }
+
+        if (function_exists('cw_mark_user_messages_read_by_operator')) {
+            cw_mark_user_messages_read_by_operator($dialog);
+        }
+
+        $wpdb->insert($tableM, [
+            'dialog_id'   => $dialog,
+            'message'     => '[image]' . esc_url_raw($url),
+            'is_operator' => 1,
+            'unread'      => 1,
+            'created_at'  => current_time('mysql'),
+        ]);
+
+        delete_user_meta($admin, 'cw_reply_dialog');
+        cw_tg_send($admin, "Фото отправлено в диалог #{$dialog}");
+
+        return ['status' => 'photo_processed'];
+    }
+
+    cw_tg_send($admin, 'Поддерживается только текст или фото.');
+    return ['status' => 'unsupported_message'];
+}
+
+function cw_tg_process_callback_action(string $action, int $dialog): array {
+    global $wpdb;
+
+    $action = sanitize_key($action);
+    $dialog = intval($dialog);
+    $admin  = cw_tg_get_admin_chat();
+
+    if ($admin === 0) {
+        return ['status' => 'no_admin_chat'];
+    }
+
+    if ($dialog <= 0 || $action === '') {
+        return ['status' => 'bad_callback'];
+    }
+
+    $tableD = $wpdb->prefix . 'cw_dialogs';
+    $tableM = $wpdb->prefix . 'cw_messages';
+
+    if ($action === 'close') {
+        $current_status = (string) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT status FROM {$tableD} WHERE id = %d",
+                $dialog
+            )
+        );
+
+        if ($current_status === '') {
+            cw_tg_send($admin, "Диалог #{$dialog} не найден.");
+            return ['status' => 'dialog_not_found'];
+        }
+
+        if ($current_status === 'closed') {
+            cw_tg_send($admin, "Диалог #{$dialog} ранее закрыт.");
+            return ['status' => 'already_closed'];
+        }
+
+        if (function_exists('cw_mark_user_messages_read_by_operator')) {
+            cw_mark_user_messages_read_by_operator($dialog);
+        }
+
+        $wpdb->update($tableD, ['status' => 'closed'], ['id' => $dialog]);
+
+        $wpdb->insert($tableM, [
+            'dialog_id'   => $dialog,
+            'message'     => '[system]Диалог закрыт через Telegram.',
+            'is_operator' => 1,
+            'unread'      => 1,
+            'created_at'  => current_time('mysql'),
+        ]);
+
+        cw_tg_send($admin, "Диалог #{$dialog} закрыт.");
+        return ['status' => 'closed'];
+    }
+
+    if ($action === 'reply') {
         $current_status = cw_tg_get_dialog_status($dialog);
 
         if ($current_status === '') {
@@ -1021,69 +1548,185 @@ function cw_tg_webhook_handler(WP_REST_Request $r) {
             return ['status' => 'already_closed'];
         }
 
-        if (!empty($msg['text'])) {
-            $text = sanitize_text_field($msg['text']);
+        update_user_meta($admin, 'cw_reply_dialog', $dialog);
+        cw_tg_send($admin, "Отправьте сообщение или фото для диалога #{$dialog}");
+        return ['status' => 'reply_selected'];
+    }
 
-            if (function_exists('cw_mark_user_messages_read_by_operator')) {
-                cw_mark_user_messages_read_by_operator($dialog);
-            }
+    if ($action === 'history') {
+        $history_text = cw_tg_get_dialog_history_text($dialog, 12);
+        cw_tg_send($admin, $history_text);
+        return ['status' => 'history_sent'];
+    }
 
-            $wpdb->insert($tableM, [
-                'dialog_id'   => $dialog,
-                'message'     => $text,
-                'is_operator' => 1,
-                'unread'      => 1,
-                'created_at'  => current_time('mysql'),
-            ]);
+    if ($action === 'stats') {
+        $stats_text = cw_tg_dialog_stats_text($dialog);
+        cw_tg_send($admin, $stats_text);
+        return ['status' => 'stats_sent'];
+    }
 
-            delete_user_meta($admin, 'cw_reply_dialog');
-            cw_tg_send($admin, "Ответ отправлен в диалог #{$dialog}");
+    if ($action === 'sbp') {
+        $payment_url = 'https://qr.nspk.ru/AS1A005O0HP24U9I8P0AN5VA03QFOL1F?type=01&bank=100000000111&crc=30da';
+        $payment_text = '<a href="' . esc_url($payment_url) . '" target="_blank">СБП QR</a>';
 
-            return ['status' => 'text_processed'];
+        if (function_exists('cw_mark_user_messages_read_by_operator')) {
+            cw_mark_user_messages_read_by_operator($dialog);
         }
 
-        if (!empty($msg['photo']) && is_array($msg['photo'])) {
-            $photo = end($msg['photo']);
-            $file_id = $photo['file_id'] ?? '';
+        $wpdb->insert($tableM, [
+            'dialog_id'   => $dialog,
+            'message'     => $payment_text,
+            'is_operator' => 1,
+            'unread'      => 1,
+            'created_at'  => current_time('mysql'),
+        ]);
 
-            if ($file_id === '') {
-                cw_tg_send($admin, 'Не удалось получить file_id фото.');
-                return ['status' => 'photo_no_fileid'];
-            }
+        cw_tg_send($admin, "СБП QR отправлено в диалог #{$dialog}");
+        return ['status' => 'sbp_sent'];
+    }
 
-            $attach_id = cw_tg_download_photo_to_media($file_id);
-            if (!$attach_id) {
-                cw_tg_send($admin, 'Не удалось скачать или сохранить фото на сайт.');
-                return ['status' => 'photo_save_failed'];
-            }
+    cw_tg_send($admin, 'Неизвестная команда Telegram-кнопки.');
+    return ['status' => 'unknown_action'];
+}
 
-            $url = wp_get_attachment_url($attach_id);
-            if (!$url) {
-                cw_tg_send($admin, 'Фото сохранено, но URL не получен.');
-                return ['status' => 'photo_url_failed'];
-            }
+function cw_tg_webhook_process_update_after_ack(array $update, string $header_secret = ''): array {
+    $admin  = cw_tg_get_admin_chat();
+    $secret = cw_tg_get_webhook_secret();
 
-            if (function_exists('cw_mark_user_messages_read_by_operator')) {
-                cw_mark_user_messages_read_by_operator($dialog);
-            }
+    if ($secret !== '' && (!$header_secret || !hash_equals($secret, $header_secret))) {
+        return ['status' => 'forbidden'];
+    }
 
-            $wpdb->insert($tableM, [
-                'dialog_id'   => $dialog,
-                'message'     => '[image]' . esc_url_raw($url),
-                'is_operator' => 1,
-                'unread'      => 1,
-                'created_at'  => current_time('mysql'),
-            ]);
+    if (!cw_tg_enabled()) {
+        return ['status' => 'integration_disabled'];
+    }
 
-            delete_user_meta($admin, 'cw_reply_dialog');
-            cw_tg_send($admin, "Фото отправлено в диалог #{$dialog}");
+    $update_id = isset($update['update_id']) ? intval($update['update_id']) : 0;
+    if ($update_id > 0) {
+        $update_lock_key = 'cw_tg_update_' . $update_id;
+        if (get_transient($update_lock_key)) {
+            return ['status' => 'duplicate_update'];
+        }
+        set_transient($update_lock_key, 1, 10 * MINUTE_IN_SECONDS);
+    }
 
-            return ['status' => 'photo_processed'];
+    if (!empty($update['callback_query']) && is_array($update['callback_query'])) {
+        $cb          = $update['callback_query'];
+        $callback_id = (string) ($cb['id'] ?? '');
+        $data        = (string) ($cb['data'] ?? '');
+
+        if (!cw_tg_is_authorized_callback($cb, $admin)) {
+            return ['status' => 'forbidden_callback'];
         }
 
-        cw_tg_send($admin, 'Поддерживается только текст или фото.');
-        return ['status' => 'unsupported_message'];
+        if (!preg_match('/^cw_(\w+)_(\d+)$/', $data, $matches)) {
+            return ['status' => 'bad_callback_data'];
+        }
+
+        $action = sanitize_key($matches[1]);
+        $dialog = intval($matches[2]);
+
+        if ($callback_id !== '') {
+            $callback_lock_key = 'cw_tg_cb_' . md5($callback_id);
+            if (get_transient($callback_lock_key)) {
+                return ['status' => 'duplicate_callback'];
+            }
+            set_transient($callback_lock_key, 1, 3 * MINUTE_IN_SECONDS);
+        }
+
+        return cw_tg_process_callback_action($action, $dialog);
+    }
+
+    if (!empty($update['message']) && is_array($update['message'])) {
+        $msg  = $update['message'];
+        $from = intval($msg['from']['id'] ?? 0);
+
+        if ($from !== $admin) {
+            return ['status' => 'ignored'];
+        }
+
+        return cw_tg_process_incoming_message_job($msg);
     }
 
     return ['status' => 'ok'];
+}
+
+function cw_tg_webhook_process_update(array $update, string $header_secret = ''): array {
+    $admin  = cw_tg_get_admin_chat();
+    $secret = cw_tg_get_webhook_secret();
+
+    if ($secret !== '' && (!$header_secret || !hash_equals($secret, $header_secret))) {
+        return [403, ['error' => 'forbidden']];
+    }
+
+    if (!cw_tg_enabled()) {
+        return [200, ['status' => 'integration_disabled']];
+    }
+
+    if (!empty($update['callback_query']) && is_array($update['callback_query'])) {
+        $cb          = $update['callback_query'];
+        $callback_id = (string) ($cb['id'] ?? '');
+        $data        = (string) ($cb['data'] ?? '');
+
+        if (!cw_tg_is_authorized_callback($cb, $admin)) {
+            return [200, cw_tg_callback_payload($callback_id, 'Нет доступа к этой кнопке.', true)];
+        }
+
+        if (!preg_match('/^cw_(\w+)_(\d+)$/', $data, $matches)) {
+            return [200, cw_tg_callback_payload($callback_id, 'Неизвестная кнопка.', true)];
+        }
+
+        $action = sanitize_key($matches[1]);
+        $dialog = intval($matches[2]);
+
+        if ($callback_id !== '') {
+            $callback_lock_key = 'cw_tg_cb_' . md5($callback_id);
+            if (get_transient($callback_lock_key)) {
+                return [200, cw_tg_callback_payload($callback_id, 'Команда уже принята.')];
+            }
+        }
+
+        $dispatched = cw_tg_dispatch_callback_action_async($action, $dialog);
+        if (!$dispatched) {
+            return [200, cw_tg_callback_payload($callback_id, 'Не удалось запустить команду.', true)];
+        }
+
+        if ($callback_id !== '') {
+            set_transient($callback_lock_key, 1, 3 * MINUTE_IN_SECONDS);
+        }
+
+        return [200, cw_tg_callback_payload($callback_id, 'Команда принята.')];
+    }
+
+    if (!empty($update['message']) && is_array($update['message'])) {
+        $msg  = $update['message'];
+        $from = intval($msg['from']['id'] ?? 0);
+
+        if ($from !== $admin) {
+            return [200, ['status' => 'ignored']];
+        }
+
+        $dispatched = cw_tg_dispatch_incoming_message_async($msg);
+
+        return [200, [
+            'status'     => $dispatched ? 'accepted' : 'dispatch_failed',
+            'dispatched' => $dispatched,
+        ]];
+    }
+
+    return [200, ['status' => 'ok']];
+}
+
+function cw_tg_webhook_handler(WP_REST_Request $r) {
+    $update = $r->get_json_params();
+    if (!is_array($update)) {
+        return new WP_REST_Response(['status' => 'invalid'], 200);
+    }
+
+    [$status, $payload] = cw_tg_webhook_process_update(
+        $update,
+        (string) $r->get_header('X-Telegram-Bot-Api-Secret-Token')
+    );
+
+    return new WP_REST_Response($payload, $status);
 }

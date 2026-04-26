@@ -16,6 +16,42 @@ function cw_max_render_wp_error($error): string {
     return $msg;
 }
 
+function cw_max_render_settings_alert(string $type, string $title, string $message): void {
+    $type = in_array($type, ['success', 'warning', 'info', 'error'], true) ? $type : 'info';
+
+    $icons = [
+        'success' => 'OK',
+        'warning' => '!',
+        'info'    => 'i',
+        'error'   => '!',
+    ];
+
+    $allowed_html = [
+        'br'     => [],
+        'strong' => [],
+        'b'      => [],
+        'em'     => [],
+        'span'   => [
+            'class' => [],
+        ],
+        'code'   => [
+            'class' => [],
+            'style' => [],
+        ],
+    ];
+    ?>
+    <div class="cw-settings-alert cw-settings-alert-<?php echo esc_attr($type); ?>" role="status">
+        <div class="cw-settings-alert-icon" aria-hidden="true"><?php echo esc_html($icons[$type]); ?></div>
+        <div class="cw-settings-alert-content">
+            <div class="cw-settings-alert-title"><?php echo esc_html($title); ?></div>
+            <?php if ($message !== ''): ?>
+                <div class="cw-settings-alert-body"><?php echo wp_kses($message, $allowed_html); ?></div>
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php
+}
+
 function cw_max_settings_page() {
     if (!current_user_can('manage_options')) {
         wp_die('Access denied');
@@ -156,97 +192,136 @@ function cw_max_settings_page() {
         }
     }
     ?>
-    <div class="wrap">
-        <h1>MAX интеграция</h1>
-
-        <?php if ($enabled): ?>
-            <div class="notice notice-success"><p><strong>MAX интеграция включена.</strong></p></div>
-        <?php else: ?>
-            <div class="notice notice-warning"><p><strong>MAX интеграция выключена.</strong> Уведомления с сайта и входящие webhook-сообщения сейчас не обрабатываются.</p></div>
-        <?php endif; ?>
-
-        <?php if ($generated): ?>
-            <div class="updated notice"><p><strong>Новый секрет для webhook сгенерирован.</strong></p></div>
-        <?php endif; ?>
-
-        <?php if ($saved): ?>
-            <div class="updated notice"><p>Настройки сохранены.</p></div>
-        <?php endif; ?>
-
-        <?php if ($webhook_result): ?>
-            <div class="notice notice-info"><p><?php echo $webhook_result; ?></p></div>
-        <?php endif; ?>
-
-        <?php if ($delete_result): ?>
-            <div class="notice notice-info"><p><?php echo $delete_result; ?></p></div>
-        <?php endif; ?>
-
-        <?php if ($subscriptions_info): ?>
-            <div class="notice notice-info"><p><?php echo $subscriptions_info; ?></p></div>
-        <?php endif; ?>
-
-        <?php if ($token_check_result): ?>
-            <div class="notice notice-info"><p><?php echo $token_check_result; ?></p></div>
-        <?php endif; ?>
-
-        <?php if ($test_result): ?>
-            <div class="notice notice-info"><p><?php echo $test_result; ?></p></div>
-        <?php endif; ?>
-
-        <?php if ($bound_user_id > 0): ?>
-            <div class="notice notice-success">
-                <p>
-                    <strong>Текущий привязанный оператор MAX:</strong>
-                    <code><?php echo esc_html((string) $bound_user_id); ?></code>
-                </p>
-                <p>Этот User ID автоматически записывается после команды <code>/start</code> в чате с ботом.</p>
+    <div class="wrap cw-settings-page cw-max-settings-page">
+        <div class="cw-settings-hero">
+            <div>
+                <div class="cw-settings-kicker">Chat Widget</div>
+                <h1>MAX интеграция</h1>
+                <p>Настройка уведомлений, webhook и привязки оператора для связи сайта с MAX.</p>
             </div>
-        <?php else: ?>
-            <div class="notice notice-warning">
-                <p><strong>Оператор MAX пока не привязан.</strong></p>
-                <p>Оставьте поле <code>Admin User ID</code> пустым и напишите боту <code>/start</code>.</p>
+            <div class="cw-settings-status <?php echo $enabled ? 'is-active' : 'is-inactive'; ?>">
+                <span class="cw-settings-status-icon" aria-hidden="true">
+                    <?php if ($enabled): ?>
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M20 6L9 17l-5-5"></path>
+                        </svg>
+                    <?php else: ?>
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M12 3v9"></path>
+                            <path d="M6.35 7.35a8 8 0 1 0 11.3 0"></path>
+                        </svg>
+                    <?php endif; ?>
+                </span>
+                <span><?php echo $enabled ? 'Интеграция включена' : 'Интеграция выключена'; ?></span>
             </div>
-        <?php endif; ?>
+        </div>
 
-        <form method="post">
+        <div class="cw-settings-notices" aria-live="polite">
+            <?php
+            if ($enabled) {
+                cw_max_render_settings_alert(
+                    'success',
+                    'MAX интеграция включена',
+                    'Новые сообщения с сайта могут отправляться в MAX, webhook может обрабатывать входящие сообщения и нажатия на кнопки.'
+                );
+            } else {
+                cw_max_render_settings_alert(
+                    'warning',
+                    'MAX интеграция выключена',
+                    '<strong>Уведомления с сайта и входящие webhook-сообщения сейчас не обрабатываются.</strong>'
+                );
+            }
+
+            if ($generated) {
+                cw_max_render_settings_alert('success', 'Webhook Secret сгенерирован', 'Новый секрет сохранён в настройках.');
+            }
+
+            if ($saved) {
+                cw_max_render_settings_alert('success', 'Настройки сохранены', 'Изменения применены.');
+            }
+
+            if ($webhook_result) {
+                $type = (strpos(wp_strip_all_tags($webhook_result), 'Ошибка:') === 0) ? 'error' : 'success';
+                cw_max_render_settings_alert($type, 'Результат установки Webhook', $webhook_result);
+            }
+
+            if ($delete_result) {
+                $type = (strpos(wp_strip_all_tags($delete_result), 'Ошибка:') === 0) ? 'error' : 'info';
+                cw_max_render_settings_alert($type, 'Результат удаления Webhook', $delete_result);
+            }
+
+            if ($subscriptions_info) {
+                $type = (strpos(wp_strip_all_tags($subscriptions_info), 'Ошибка:') === 0) ? 'error' : 'info';
+                cw_max_render_settings_alert($type, 'Информация /subscriptions', $subscriptions_info);
+            }
+
+            if ($token_check_result) {
+                $type = (strpos(wp_strip_all_tags($token_check_result), 'Ошибка:') === 0) ? 'error' : 'success';
+                cw_max_render_settings_alert($type, 'Проверка токена', $token_check_result);
+            }
+
+            if ($test_result) {
+                $type = (strpos(wp_strip_all_tags($test_result), 'Не удалось') === 0 || strpos(wp_strip_all_tags($test_result), 'Сначала') === 0 || strpos(wp_strip_all_tags($test_result), 'Укажите') === 0) ? 'warning' : 'success';
+                cw_max_render_settings_alert($type, 'Тестовое сообщение', $test_result);
+            }
+
+            if ($bound_user_id > 0) {
+                cw_max_render_settings_alert(
+                    'success',
+                    'Оператор MAX привязан',
+                    'Текущий User ID: <code>' . esc_html((string) $bound_user_id) . '</code><br>Этот User ID автоматически записывается после команды <code>/start</code> в чате с ботом.'
+                );
+            } else {
+                cw_max_render_settings_alert(
+                    'warning',
+                    'Оператор MAX пока не привязан',
+                    'Оставьте поле <code>Admin User ID</code> пустым и напишите боту <code>/start</code>.'
+                );
+            }
+            ?>
+        </div>
+
+        <form method="post" class="cw-settings-form">
             <?php wp_nonce_field('cw_max_settings_nonce'); ?>
 
-            <table class="form-table">
-                <tr>
-                    <th scope="row">Включить интеграцию</th>
-                    <td>
-                        <label>
+            <div class="cw-settings-grid">
+                <section class="cw-settings-card">
+                    <div class="cw-settings-card-head">
+                        <div class="cw-settings-card-icon">MAX</div>
+                        <div>
+                            <h2>Основные настройки</h2>
+                            <p>Токен бота MAX, User ID оператора и секрет webhook.</p>
+                        </div>
+                    </div>
+
+                    <div class="cw-settings-field is-checkbox">
+                        <label class="cw-settings-check">
                             <input type="checkbox" name="cw_max_enabled" value="1" <?php checked($enabled, 1); ?>>
-                            MAX интеграция активна
+                            <span>
+                                <strong>MAX интеграция активна</strong>
+                                <em>Если выключить, новые сообщения с сайта не будут отправляться в MAX, а webhook не будет обрабатывать входящие сообщения и нажатия на кнопки.</em>
+                            </span>
                         </label>
-                        <p class="description">Если выключить, новые сообщения из сайта не будут отправляться в MAX, а MAX webhook не будет обрабатывать входящие сообщения и нажатия на кнопки.</p>
-                    </td>
-                </tr>
+                    </div>
 
-                <tr>
-                    <th scope="row">MAX Token</th>
-                    <td>
-                        <input type="text" name="cw_max_token" value="<?php echo esc_attr($token); ?>" class="regular-text" autocomplete="off" />
-                        <p class="description">Токен бота MAX.</p>
-                    </td>
-                </tr>
+                    <div class="cw-settings-field">
+                        <label for="cw_max_token">MAX Token</label>
+                        <input id="cw_max_token" type="text" name="cw_max_token" value="<?php echo esc_attr($token); ?>" autocomplete="off" />
+                        <p>Токен бота MAX.</p>
+                    </div>
 
-                <tr>
-                    <th scope="row">Admin User ID</th>
-                    <td>
-                        <input type="text" name="cw_max_admin_user_id" value="<?php echo esc_attr($admin_user_id); ?>" class="regular-text" autocomplete="off" />
-                        <p class="description">Можно оставить пустым. Тогда первый пользователь, который напишет боту <code>/start</code>, будет сохранён как оператор MAX.</p>
+                    <div class="cw-settings-field">
+                        <label for="cw_max_admin_user_id">Admin User ID</label>
+                        <input id="cw_max_admin_user_id" type="text" name="cw_max_admin_user_id" value="<?php echo esc_attr($admin_user_id); ?>" autocomplete="off" />
+                        <p>Можно оставить пустым. Тогда первый пользователь, который напишет боту <code>/start</code>, будет сохранён как оператор MAX.</p>
                         <?php if ($bound_user_id > 0): ?>
-                            <p class="description">Сейчас сохранён User ID: <code><?php echo esc_html((string) $bound_user_id); ?></code></p>
+                            <p>Сейчас сохранён User ID: <code><?php echo esc_html((string) $bound_user_id); ?></code></p>
                         <?php endif; ?>
-                    </td>
-                </tr>
+                    </div>
 
-                <tr>
-                    <th scope="row">Webhook Secret</th>
-                    <td>
-                        <input type="text" name="cw_max_webhook_secret" value="<?php echo esc_attr($secret); ?>" class="regular-text" autocomplete="off" />
-                        <br><br>
+                    <div class="cw-settings-field">
+                        <label for="cw_max_webhook_secret">Webhook Secret</label>
+                        <input id="cw_max_webhook_secret" type="text" name="cw_max_webhook_secret" value="<?php echo esc_attr($secret); ?>" autocomplete="off" />
                         <?php
                         $generate_url = add_query_arg(
                             [
@@ -256,35 +331,68 @@ function cw_max_settings_page() {
                             admin_url('admin.php?page=cw_max')
                         );
                         ?>
-                        <a href="<?php echo esc_url($generate_url); ?>" class="button">Сгенерировать секрет</a>
-                        <p class="description">Если секрет указан, MAX будет присылать его в заголовке <code>X-Max-Bot-Api-Secret</code>.</p>
-                    </td>
-                </tr>
-            </table>
+                        <a href="<?php echo esc_url($generate_url); ?>" class="button cw-settings-secondary-link">Сгенерировать секрет</a>
+                        <p>Если секрет указан, MAX будет присылать его в заголовке <code>X-Max-Bot-Api-Secret</code>.</p>
+                    </div>
+                </section>
 
-            <p class="submit">
+                <section class="cw-settings-card">
+                    <div class="cw-settings-card-head">
+                        <div class="cw-settings-card-icon">ID</div>
+                        <div>
+                            <h2>Привязка оператора</h2>
+                            <p>Кто получает уведомления и отвечает из MAX.</p>
+                        </div>
+                    </div>
+
+                    <div class="cw-settings-field is-checkbox">
+                        <div class="cw-settings-check">
+                            <span>
+                                <?php if ($bound_user_id > 0): ?>
+                                    <strong>Оператор привязан</strong>
+                                    <em>Текущий User ID: <code><?php echo esc_html((string) $bound_user_id); ?></code></em>
+                                <?php else: ?>
+                                    <strong>Оператор пока не привязан</strong>
+                                    <em>Оставьте Admin User ID пустым и отправьте боту MAX команду <code>/start</code>.</em>
+                                <?php endif; ?>
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="cw-settings-field">
+                        <label>Как работает привязка</label>
+                        <p>После команды <code>/start</code> User ID автоматически сохранится в настройках и будет использоваться для уведомлений.</p>
+                        <p>Кнопки <strong>Ответить</strong>, <strong>История диалога</strong>, <strong>Закрыть</strong>, <strong>Статистика</strong> и <strong>СБП QR</strong> появляются в реальных уведомлениях о новых сообщениях с сайта.</p>
+                    </div>
+
+                    <div class="cw-settings-field">
+                        <label>События webhook</label>
+                        <p>Для кнопок из <code>max.php</code> webhook должен быть установлен с типами событий: <code>message_created</code>, <code>message_callback</code>, <code>bot_started</code>.</p>
+                    </div>
+                </section>
+            </div>
+
+            <section class="cw-settings-card cw-settings-webhook-card">
+                <div class="cw-settings-card-head">
+                    <div class="cw-settings-card-icon">URL</div>
+                    <div>
+                        <h2>Webhook URL</h2>
+                        <p>Адрес, который используется для входящих сообщений от MAX.</p>
+                    </div>
+                </div>
+                <code class="cw-settings-code"><?php echo esc_html($webhook_url); ?></code>
+            </section>
+
+            <div class="cw-settings-actions">
                 <button type="submit" name="cw_max_save" class="button button-primary">Сохранить настройки</button>
                 <button type="submit" name="cw_max_check_token" class="button">Проверить токен (/me)</button>
                 <button type="submit" name="cw_max_set_webhook" class="button">Установить Webhook</button>
                 <button type="submit" name="cw_max_check_subscriptions" class="button">Проверить /subscriptions</button>
                 <button type="submit" name="cw_max_send_test" class="button">Отправить тест</button>
                 <button type="submit" name="cw_max_delete_webhook" class="button" onclick="return confirm('Удалить webhook MAX для этого сайта?');">Удалить Webhook</button>
-            </p>
+            </div>
         </form>
-
-        <hr>
-
-        <h2>Webhook URL</h2>
-        <code><?php echo esc_html($webhook_url); ?></code>
-
-        <p style="margin-top:12px;">
-            Для кнопок из <code>max.php</code> webhook должен быть установлен с типами событий:
-            <code>message_created</code>, <code>message_callback</code>, <code>bot_started</code>.
-        </p>
-
-        <p>После привязки оператор использует в MAX команду <code>/start</code> и кнопки из уведомлений.</p>
-
-        <p>Кнопки <strong>Ответить</strong>, <strong>История диалога</strong>, <strong>Закрыть</strong>, <strong>Статистика</strong> и <strong>СБП QR</strong> появятся на реальных уведомлениях о новых сообщениях из сайта.</p>
     </div>
+
     <?php
 }

@@ -2,7 +2,7 @@
 /*
 Plugin Name: Chat Widget
 Description: Онлайн-чат с оператором + Telegram и MAX интеграция.
-Version: 5.4
+Version: 8.1
 Author: Fakel
 */
 
@@ -46,6 +46,8 @@ function cw_create_or_update_tables(): void {
         geo_org VARCHAR(190) NOT NULL DEFAULT '',
         geo_ip VARCHAR(100) NOT NULL DEFAULT '',
         geo_browser TEXT NULL,
+        contact_email VARCHAR(190) NOT NULL DEFAULT '',
+        contact_phone VARCHAR(80) NOT NULL DEFAULT '',
         created_at DATETIME NOT NULL,
         PRIMARY KEY (id),
         KEY status (status),
@@ -78,6 +80,16 @@ function cw_create_or_update_tables(): void {
     $has_geo_isp = $wpdb->get_var("SHOW COLUMNS FROM {$table_dialogs} LIKE 'geo_isp'");
     if ($has_geo_isp && !$has_geo_org) {
         $wpdb->query("UPDATE {$table_dialogs} SET geo_org = geo_isp WHERE geo_org = ''");
+    }
+
+    $has_contact_email = $wpdb->get_var("SHOW COLUMNS FROM {$table_dialogs} LIKE 'contact_email'");
+    if (!$has_contact_email) {
+        $wpdb->query("ALTER TABLE {$table_dialogs} ADD COLUMN contact_email VARCHAR(190) NOT NULL DEFAULT '' AFTER geo_browser");
+    }
+
+    $has_contact_phone = $wpdb->get_var("SHOW COLUMNS FROM {$table_dialogs} LIKE 'contact_phone'");
+    if (!$has_contact_phone) {
+        $wpdb->query("ALTER TABLE {$table_dialogs} ADD COLUMN contact_phone VARCHAR(80) NOT NULL DEFAULT '' AFTER contact_email");
     }
 
     $has_is_bot = $wpdb->get_var("SHOW COLUMNS FROM {$table_messages} LIKE 'is_bot'");
@@ -164,6 +176,9 @@ add_action('wp_footer', function () {
     $notify_src = esc_url(plugin_dir_url(__FILE__) . 'assets/notify.mp3');
     $rest_root  = esc_url_raw(rest_url('cw/v1/'));
     $nonce      = wp_create_nonce('wp_rest');
+    $consent_message = function_exists('cw_get_chat_consent_message')
+        ? cw_get_chat_consent_message()
+        : '';
 ?>
     <div id="cw-open-btn" role="button" aria-label="Открыть чат" data-cw-ready="0">
         <svg viewBox="0 0 24 24" width="24" height="24" fill="white" aria-hidden="true">
@@ -233,7 +248,8 @@ add_action('wp_footer', function () {
 
         window.CW_API = {
             root: <?php echo wp_json_encode($rest_root); ?>,
-            nonce: <?php echo wp_json_encode($nonce); ?>
+            nonce: <?php echo wp_json_encode($nonce); ?>,
+            consent_message: <?php echo wp_json_encode($consent_message); ?>
         };
 
         var sharedSrc = <?php echo wp_json_encode($shared_src); ?>;
@@ -478,15 +494,33 @@ add_action('admin_menu', function () {
 
 add_action('admin_enqueue_scripts', function ($hook) {
 
+    $page = isset($_GET['page'])
+        ? sanitize_key(wp_unslash($_GET['page']))
+        : '';
+
     $admin_pages = [
-        'toplevel_page_cw_operator',
-        'chat_page_cw_telegram',
-        'chat_page_cw_max',
-        'chat_page_cw_bot',
-        'chat_page_cw_commands',
+        'cw_operator',
+        'cw_telegram',
+        'cw_max',
+        'cw_bot',
+        'cw_commands',
     ];
 
-    if (!in_array($hook, $admin_pages, true)) {
+    $admin_hooks = [
+        'toplevel_page_cw_operator',
+        'chat_page_cw_telegram',
+        'cw_operator_page_cw_telegram',
+        'chat_page_cw_max',
+        'cw_operator_page_cw_max',
+        'chat_page_cw_bot',
+        'cw_operator_page_cw_bot',
+        'chat_page_cw_commands',
+        'cw_operator_page_cw_commands',
+    ];
+
+    $is_plugin_admin_page = in_array($page, $admin_pages, true) || in_array($hook, $admin_hooks, true);
+
+    if (!$is_plugin_admin_page) {
         return;
     }
 
@@ -509,7 +543,9 @@ add_action('admin_enqueue_scripts', function ($hook) {
         true
     );
 
-    if ($hook !== 'toplevel_page_cw_operator') {
+    $is_operator_page = ($page === 'cw_operator' || $hook === 'toplevel_page_cw_operator');
+
+    if (!$is_operator_page) {
         return;
     }
 

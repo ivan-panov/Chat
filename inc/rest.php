@@ -28,6 +28,14 @@ add_action('rest_api_init', function () {
         'permission_callback' => '__return_true',
     ]);
 
+    register_rest_route('cw/v1', '/dialogs/(?P<id>\d+)/contact', [
+        'methods'  => 'GET',
+        'callback' => 'cw_rest_contact',
+        'permission_callback' => function () {
+            return current_user_can('manage_options');
+        },
+    ]);
+
     register_rest_route('cw/v1', '/dialogs/(?P<id>\d+)/close', [
         'methods'  => 'POST',
         'callback' => 'cw_rest_close',
@@ -39,6 +47,14 @@ add_action('rest_api_init', function () {
     register_rest_route('cw/v1', '/dialogs/(?P<id>\d+)/delete', [
         'methods'  => 'POST',
         'callback' => 'cw_rest_delete',
+        'permission_callback' => function () {
+            return current_user_can('manage_options');
+        },
+    ]);
+
+    register_rest_route('cw/v1', '/dialogs/(?P<id>\d+)/message-statuses', [
+        'methods'  => 'GET',
+        'callback' => 'cw_rest_message_statuses',
         'permission_callback' => function () {
             return current_user_can('manage_options');
         },
@@ -171,6 +187,254 @@ function cw_require_dialog_access_or_403(WP_REST_Request $r, int $dialog_id) {
     }
 
     return new WP_REST_Response(['error' => 'forbidden'], 403);
+}
+
+
+function cw_ensure_contact_columns(): void {
+    global $wpdb;
+
+    static $done = false;
+    if ($done) return;
+
+    $D = $wpdb->prefix . 'cw_dialogs';
+
+    $has_email = $wpdb->get_var("SHOW COLUMNS FROM {$D} LIKE 'contact_email'");
+    if (!$has_email) {
+        $wpdb->query("ALTER TABLE {$D} ADD COLUMN contact_email VARCHAR(190) NOT NULL DEFAULT '' AFTER geo_browser");
+    }
+
+    $has_phone = $wpdb->get_var("SHOW COLUMNS FROM {$D} LIKE 'contact_phone'");
+    if (!$has_phone) {
+        $wpdb->query("ALTER TABLE {$D} ADD COLUMN contact_phone VARCHAR(80) NOT NULL DEFAULT '' AFTER contact_email");
+    }
+
+    $done = true;
+}
+
+function cw_normalize_contact_phone_candidate(string $candidate): string {
+    $raw = trim($candidate);
+    if ($raw === '') return '';
+
+    if (preg_match('/\d{4}\s*[-\/.]\s*\d{1,2}\s*[-\/.]\s*\d{1,2}/u', $raw)) {
+        return '';
+    }
+
+    $starts_plus = preg_match('/^\s*\+/', $raw) === 1;
+    $digits = preg_replace('/\D+/', '', $raw);
+
+    if (!is_string($digits) || $digits === '') return '';
+
+    if (strpos($digits, '00') === 0 && strlen($digits) > 10) {
+        $digits = substr($digits, 2);
+        $starts_plus = true;
+    }
+
+    $len = strlen($digits);
+    if ($len < 10 || $len > 15) return '';
+
+    if (!$starts_plus && !in_array($len, [10, 11], true)) {
+        return '';
+    }
+
+    if (!$starts_plus && $len === 11 && $digits[0] !== '7' && $digits[0] !== '8') {
+        return '';
+    }
+
+    if ($len === 10) {
+        return '+7 (' . substr($digits, 0, 3) . ') ' . substr($digits, 3, 3) . '-' . substr($digits, 6, 2) . '-' . substr($digits, 8, 2);
+    }
+
+    if ($len === 11 && ($digits[0] === '7' || $digits[0] === '8')) {
+        $local = substr($digits, 1);
+        return '+7 (' . substr($local, 0, 3) . ') ' . substr($local, 3, 3) . '-' . substr($local, 6, 2) . '-' . substr($local, 8, 2);
+    }
+
+    return '+' . $digits;
+}
+
+function cw_extract_contact_from_text(string $text): array {
+    $clean = wp_strip_all_tags(str_replace(["\r", "\n", "\t"], ' ', $text));
+    $clean_norm = preg_replace('/\s+/u', ' ', $clean);
+    if (is_string($clean_norm)) {
+        $clean = $clean_norm;
+    }
+
+    $email = '';
+    if (preg_match('/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/iu', $clean, $m)) {
+        $candidate = trim((string) $m[0], " \t\n\r.,;:!?()[]<>\"'");
+        if (is_email($candidate)) {
+            $email = sanitize_email($candidate);
+        }
+    }
+
+    $phone = '';
+    if (preg_match_all('/(?<!\d)(?:\+?\d[\d\s().\-]{8,}\d)(?!\d)/u', $clean, $matches)) {
+        foreach ((array) ($matches[0] ?? []) as $candidate) {
+            if (strpos((string) $candidate, '@') !== false) continue;
+
+            $normalized = cw_normalize_contact_phone_candidate((string) $candidate);
+            if ($normalized !== '') {
+                $phone = $normalized;
+                break;
+            }
+        }
+    }
+
+    return [
+        'email' => $email,
+        'phone' => $phone,
+    ];
+}
+
+function cw_get_dialog_contact(int $dialog_id, bool $scan_if_empty = false): array {
+    global $wpdb;
+
+    if ($dialog_id <= 0) {
+        return ['email' => '', 'phone' => ''];
+    }
+
+    cw_ensure_contact_columns();
+
+    $D = $wpdb->prefix . 'cw_dialogs';
+
+    $row = $wpdb->get_row(
+        $wpdb->prepare(
+            "SELECT contact_email, contact_phone FROM {$D} WHERE id=%d",
+            $dialog_id
+        ),
+        ARRAY_A
+    );
+
+    if (!$row) {
+        return ['email' => '', 'phone' => ''];
+    }
+
+    $contact = [
+        'email' => sanitize_email((string) ($row['contact_email'] ?? '')),
+        'phone' => sanitize_text_field((string) ($row['contact_phone'] ?? '')),
+    ];
+
+    if ($scan_if_empty && ($contact['email'] === '' || $contact['phone'] === '')) {
+        return cw_refresh_dialog_contact_from_messages($dialog_id);
+    }
+
+    return $contact;
+}
+
+function cw_refresh_dialog_contact_from_messages(int $dialog_id): array {
+    global $wpdb;
+
+    if ($dialog_id <= 0) {
+        return ['email' => '', 'phone' => ''];
+    }
+
+    cw_ensure_contact_columns();
+
+    $D = $wpdb->prefix . 'cw_dialogs';
+    $M = $wpdb->prefix . 'cw_messages';
+
+    $current = $wpdb->get_row(
+        $wpdb->prepare(
+            "SELECT contact_email, contact_phone FROM {$D} WHERE id=%d",
+            $dialog_id
+        ),
+        ARRAY_A
+    );
+
+    if (!$current) {
+        return ['email' => '', 'phone' => ''];
+    }
+
+    $email = sanitize_email((string) ($current['contact_email'] ?? ''));
+    $phone = sanitize_text_field((string) ($current['contact_phone'] ?? ''));
+
+    $messages = $wpdb->get_col(
+        $wpdb->prepare(
+            "SELECT message FROM {$M} WHERE dialog_id=%d AND is_operator=0 ORDER BY id ASC",
+            $dialog_id
+        )
+    );
+
+    foreach ((array) $messages as $raw_message) {
+        $found = cw_extract_contact_from_text((string) $raw_message);
+
+        if (!empty($found['email'])) {
+            $email = sanitize_email((string) $found['email']);
+        }
+
+        if (!empty($found['phone'])) {
+            $phone = sanitize_text_field((string) $found['phone']);
+        }
+    }
+
+    $data = [];
+
+    if ($email !== sanitize_email((string) ($current['contact_email'] ?? ''))) {
+        $data['contact_email'] = $email;
+    }
+
+    if ($phone !== sanitize_text_field((string) ($current['contact_phone'] ?? ''))) {
+        $data['contact_phone'] = $phone;
+    }
+
+    if ($data) {
+        $wpdb->update($D, $data, ['id' => $dialog_id]);
+    }
+
+    return [
+        'email' => $email,
+        'phone' => $phone,
+    ];
+}
+
+function cw_update_dialog_contact_from_message(int $dialog_id, string $message): array {
+    global $wpdb;
+
+    if ($dialog_id <= 0 || trim($message) === '') {
+        return ['email' => '', 'phone' => ''];
+    }
+
+    $found = cw_extract_contact_from_text($message);
+    if (empty($found['email']) && empty($found['phone'])) {
+        return cw_get_dialog_contact($dialog_id, false);
+    }
+
+    cw_ensure_contact_columns();
+
+    $D = $wpdb->prefix . 'cw_dialogs';
+    $current = $wpdb->get_row(
+        $wpdb->prepare(
+            "SELECT contact_email, contact_phone FROM {$D} WHERE id=%d",
+            $dialog_id
+        ),
+        ARRAY_A
+    );
+
+    if (!$current) {
+        return ['email' => '', 'phone' => ''];
+    }
+
+    $data = [];
+
+    if (!empty($found['email'])) {
+        $email = sanitize_email((string) $found['email']);
+        if ($email !== sanitize_email((string) ($current['contact_email'] ?? ''))) {
+            $data['contact_email'] = $email;
+        }
+    }
+
+    if (!empty($found['phone'])) {
+        $phone = sanitize_text_field((string) $found['phone']);
+        if ($phone !== sanitize_text_field((string) ($current['contact_phone'] ?? ''))) {
+            $data['contact_phone'] = $phone;
+        }
+    }
+
+    if ($data) {
+        $wpdb->update($D, $data, ['id' => $dialog_id]);
+    }
+
+    return cw_get_dialog_contact($dialog_id, false);
 }
 
 function cw_client_info_from_request(WP_REST_Request $r): array {
@@ -787,7 +1051,9 @@ function cw_rest_dialogs(WP_REST_Request $r) {
         return ['id' => $dialog_id];
     }
 
-    return $wpdb->get_results("
+    nocache_headers();
+
+    $dialogs = $wpdb->get_results("
         SELECT d.*,
         (SELECT COUNT(*) FROM {$M} m
             WHERE m.dialog_id=d.id
@@ -797,6 +1063,52 @@ function cw_rest_dialogs(WP_REST_Request $r) {
         FROM {$D} d
         ORDER BY d.id DESC
     ");
+
+    $res = new WP_REST_Response($dialogs);
+    $res->header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    $res->header('Pragma', 'no-cache');
+    $res->header('Expires', '0');
+    return $res;
+}
+
+
+
+/* ============================================================
+   CONTACT CARD
+============================================================ */
+
+function cw_rest_contact(WP_REST_Request $r) {
+    global $wpdb;
+
+    if (!current_user_can('manage_options')) {
+        return new WP_REST_Response(['error' => 'permission_denied'], 403);
+    }
+
+    $id = intval($r['id']);
+    if ($id <= 0) {
+        return new WP_REST_Response(['error' => 'invalid_dialog_id'], 400);
+    }
+
+    cw_ensure_contact_columns();
+
+    $D = $wpdb->prefix . 'cw_dialogs';
+    $exists = (int) $wpdb->get_var(
+        $wpdb->prepare("SELECT COUNT(*) FROM {$D} WHERE id=%d", $id)
+    );
+
+    if (!$exists) {
+        return new WP_REST_Response(['error' => 'dialog_not_found'], 404);
+    }
+
+    $contact = cw_get_dialog_contact($id, true);
+
+    nocache_headers();
+
+    $res = new WP_REST_Response($contact);
+    $res->header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    $res->header('Pragma', 'no-cache');
+    $res->header('Expires', '0');
+    return $res;
 }
 
 /* ============================================================
@@ -856,14 +1168,30 @@ function cw_rest_messages(WP_REST_Request $r) {
     );
 
     if ($r->get_method() === 'GET') {
-        $msgs = $wpdb->get_results(
-            $wpdb->prepare("SELECT * FROM {$M} WHERE dialog_id=%d ORDER BY id ASC", $id)
-        );
+        $after_id = max(0, intval($r->get_param('after_id')));
+
+        if ($after_id > 0) {
+            $msgs = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT * FROM {$M} WHERE dialog_id=%d AND id>%d ORDER BY id ASC",
+                    $id,
+                    $after_id
+                )
+            );
+        } else {
+            $msgs = $wpdb->get_results(
+                $wpdb->prepare("SELECT * FROM {$M} WHERE dialog_id=%d ORDER BY id ASC", $id)
+            );
+        }
 
         $res = new WP_REST_Response($msgs);
         $res->header('X-Dialog-Status', $status);
+        $res->header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+        $res->header('Pragma', 'no-cache');
+        $res->header('Expires', '0');
         return $res;
     }
+
 
     $isOp = intval($r->get_param('operator'));
 
@@ -1032,6 +1360,10 @@ function cw_rest_messages(WP_REST_Request $r) {
     ]);
 
     $new_message_id = (int) $wpdb->insert_id;
+
+    if (!$isOp && $new_message_id > 0) {
+        cw_update_dialog_contact_from_message($id, $msg);
+    }
 
     $bot_result = ['handled' => false];
 
@@ -1216,6 +1548,48 @@ function cw_rest_delete(WP_REST_Request $r) {
         'deleted_files'  => count($deleted_files),
         'deleted_dialog' => $id,
     ];
+}
+
+/* ============================================================
+   MESSAGE STATUSES
+============================================================ */
+
+function cw_rest_message_statuses(WP_REST_Request $r) {
+    global $wpdb;
+
+    $id = intval($r['id']);
+    if ($id <= 0) {
+        return new WP_REST_Response(['error' => 'dialog_not_found'], 404);
+    }
+
+    $D = $wpdb->prefix . 'cw_dialogs';
+    $M = $wpdb->prefix . 'cw_messages';
+
+    $dialog_exists = (int) $wpdb->get_var(
+        $wpdb->prepare("SELECT COUNT(*) FROM {$D} WHERE id = %d", $id)
+    );
+
+    if (!$dialog_exists) {
+        return new WP_REST_Response(['error' => 'dialog_not_found'], 404);
+    }
+
+    $rows = $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT id, unread
+             FROM {$M}
+             WHERE dialog_id = %d
+               AND is_operator = 1
+             ORDER BY id ASC",
+            $id
+        ),
+        ARRAY_A
+    );
+
+    $res = new WP_REST_Response($rows ?: []);
+    $res->header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    $res->header('Pragma', 'no-cache');
+    $res->header('Expires', '0');
+    return $res;
 }
 
 /* ============================================================
