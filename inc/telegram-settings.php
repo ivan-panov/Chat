@@ -99,6 +99,104 @@ function cw_tg_render_settings_alert(string $type, string $title, string $messag
     <?php
 }
 
+function cw_tg_settings_error_body($error): string {
+    if (!is_wp_error($error)) {
+        return '';
+    }
+
+    $data = $error->get_error_data();
+    if (is_array($data) && isset($data['body'])) {
+        return (string) $data['body'];
+    }
+
+    return '';
+}
+
+function cw_tg_settings_is_resolve_host_error($error): bool {
+    if (!is_wp_error($error)) {
+        return false;
+    }
+
+    $needle = strtolower($error->get_error_message() . ' ' . cw_tg_settings_error_body($error));
+    return strpos($needle, 'failed to resolve host') !== false
+        || strpos($needle, 'temporary failure in name resolution') !== false;
+}
+
+function cw_tg_settings_is_public_ipv4(string $ip): bool {
+    return (bool) filter_var(
+        $ip,
+        FILTER_VALIDATE_IP,
+        FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+    );
+}
+
+function cw_tg_settings_guess_webhook_ip(): string {
+    $hosts = [];
+
+    if (function_exists('cw_tg_direct_webhook_url')) {
+        $host = (string) wp_parse_url(cw_tg_direct_webhook_url(), PHP_URL_HOST);
+        if ($host !== '') {
+            $hosts[] = $host;
+        }
+    }
+
+    $home_host = (string) wp_parse_url(home_url('/'), PHP_URL_HOST);
+    if ($home_host !== '') {
+        $hosts[] = $home_host;
+    }
+
+    foreach (array_unique($hosts) as $host) {
+        $ips = function_exists('gethostbynamel') ? gethostbynamel($host) : false;
+        if (is_array($ips)) {
+            foreach ($ips as $ip) {
+                $ip = trim((string) $ip);
+                if (cw_tg_settings_is_public_ipv4($ip)) {
+                    return $ip;
+                }
+            }
+        }
+
+        $ip = gethostbyname($host);
+        if (is_string($ip) && $ip !== $host && cw_tg_settings_is_public_ipv4($ip)) {
+            return $ip;
+        }
+    }
+
+    $server_ip = trim((string) ($_SERVER['SERVER_ADDR'] ?? ''));
+    if (cw_tg_settings_is_public_ipv4($server_ip)) {
+        return $server_ip;
+    }
+
+    return '';
+}
+
+function cw_tg_settings_set_webhook_with_dns_fallback(array $body): array {
+    $response = cw_tg_api_request('setWebhook', $body, 'POST', 45, 25);
+
+    if (!cw_tg_settings_is_resolve_host_error($response)) {
+        return [
+            'response' => $response,
+            'fallback_ip' => '',
+        ];
+    }
+
+    $fallback_ip = cw_tg_settings_guess_webhook_ip();
+    if ($fallback_ip === '') {
+        return [
+            'response' => $response,
+            'fallback_ip' => '',
+        ];
+    }
+
+    $fallback_body = $body;
+    $fallback_body['ip_address'] = $fallback_ip;
+
+    return [
+        'response' => cw_tg_api_request('setWebhook', $fallback_body, 'POST', 45, 25),
+        'fallback_ip' => $fallback_ip,
+    ];
+}
+
 function cw_telegram_settings_page() {
     if (!current_user_can('manage_options')) {
         wp_die('Access denied');
@@ -191,12 +289,20 @@ function cw_telegram_settings_page() {
                     $body['secret_token'] = $secret;
                 }
 
-                $response = cw_tg_api_request('setWebhook', $body, 'POST', 45, 25);
+                $set_result = cw_tg_settings_set_webhook_with_dns_fallback($body);
+                $response = $set_result['response'];
+                $fallback_ip = (string) ($set_result['fallback_ip'] ?? '');
 
                 if (is_wp_error($response)) {
                     $webhook_result = 'Ошибка: ' . cw_tg_render_wp_error($response);
+                    if ($fallback_ip !== '') {
+                        $webhook_result .= '<br>Автоповтор с IP ' . esc_html($fallback_ip) . ' тоже не прошёл.';
+                    }
                 } else {
                     $webhook_result = 'Webhook подключён: ' . esc_html(wp_json_encode($response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                    if ($fallback_ip !== '') {
+                        $webhook_result .= '<br><strong>DNS fallback:</strong> Telegram не смог разрешить домен, поэтому подключение автоматически повторено с ip_address=' . esc_html($fallback_ip) . '.';
+                    }
                 }
             }
         } else {
@@ -451,6 +557,7 @@ function cw_telegram_settings_page() {
                     </div>
                 </div>
                 <code class="cw-settings-code"><?php echo esc_html(cw_tg_direct_webhook_url()); ?></code>
+                <p class="description">Обычно webhook подключается только через домен. Если Telegram вернёт ошибку DNS <code>Failed to resolve host</code>, плагин автоматически повторит подключение с параметром <code>ip_address</code>, вычисленным по DNS домена на сервере.</p>
 
             </section>
 

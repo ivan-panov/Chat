@@ -2,7 +2,7 @@
 /*
 Plugin Name: Chat Widget
 Description: Онлайн-чат с оператором + Telegram и MAX интеграция.
-Version: 8.1
+Version: 8.3
 Author: Fakel
 */
 
