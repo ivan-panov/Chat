@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: Chat Widget
-Description: Онлайн-чат с оператором + Telegram и MAX интеграция.
-Version: 8.3
+Description: Онлайн-чат с оператором + Telegram, MAX и двусторонняя CRM API интеграция.
+Version: 8.8
 Author: Fakel
 */
 
@@ -18,6 +18,7 @@ require_once __DIR__ . '/inc/telegram-settings.php';
 require_once __DIR__ . '/inc/max.php';
 require_once __DIR__ . '/inc/max-settings.php';
 require_once __DIR__ . '/inc/commands-settings.php';
+require_once __DIR__ . '/inc/api-settings.php';
 require_once __DIR__ . '/inc/bot.php';
 require_once __DIR__ . '/inc/bot-settings.php';
 require_once __DIR__ . '/admin/operator-panel.php';
@@ -436,10 +437,12 @@ add_action('admin_menu', function () {
     $tg_enabled  = function_exists('cw_tg_enabled') ? cw_tg_enabled() : true;
     $max_enabled = function_exists('cw_max_enabled') ? cw_max_enabled() : true;
     $bot_enabled = function_exists('cw_bot_enabled') ? cw_bot_enabled() : false;
+    $api_enabled = function_exists('cw_api_enabled') ? cw_api_enabled() : false;
 
     $tg_label  = cw_menu_status_label('Telegram', $tg_enabled);
     $max_label = cw_menu_status_label('MAX', $max_enabled);
     $bot_label = cw_menu_status_label('Бот', $bot_enabled);
+    $api_label = cw_menu_status_label('API', $api_enabled);
 
     add_menu_page(
         'Чат',
@@ -486,6 +489,15 @@ add_action('admin_menu', function () {
         'cw_commands',
         'cw_commands_settings_page'
     );
+
+    add_submenu_page(
+        'cw_operator',
+        $api_label,
+        $api_label,
+        'manage_options',
+        'cw_api',
+        'cw_api_settings_page'
+    );
 });
 
 /* ============================================================
@@ -504,6 +516,7 @@ add_action('admin_enqueue_scripts', function ($hook) {
         'cw_max',
         'cw_bot',
         'cw_commands',
+        'cw_api',
     ];
 
     $admin_hooks = [
@@ -516,6 +529,8 @@ add_action('admin_enqueue_scripts', function ($hook) {
         'cw_operator_page_cw_bot',
         'chat_page_cw_commands',
         'cw_operator_page_cw_commands',
+        'chat_page_cw_api',
+        'cw_operator_page_cw_api',
     ];
 
     $is_plugin_admin_page = in_array($page, $admin_pages, true) || in_array($hook, $admin_hooks, true);

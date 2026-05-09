@@ -375,7 +375,13 @@
     function showAjaxError(prefix, xhr) {
         let msg = prefix || 'Ошибка';
 
-        if (xhr && xhr.responseJSON && (xhr.responseJSON.details || xhr.responseJSON.error)) {
+        if (xhr && xhr.responseJSON && xhr.responseJSON.error === 'upload_quota_exceeded') {
+            msg += ': превышен лимит загрузок — не более 20 МБ за 60 минут.';
+        } else if (xhr && xhr.responseJSON && xhr.responseJSON.error === 'upload_rate_limited') {
+            msg += ': слишком много попыток загрузки — не более 10 файлов за 10 минут.';
+        } else if (xhr && xhr.responseJSON && (xhr.responseJSON.error === 'invalid_file_type' || xhr.responseJSON.error === 'invalid_file_mime')) {
+            msg += ': тип файла не разрешён или содержимое не соответствует расширению.';
+        } else if (xhr && xhr.responseJSON && (xhr.responseJSON.details || xhr.responseJSON.error)) {
             msg += ': ' + (xhr.responseJSON.details || xhr.responseJSON.error);
         } else if (xhr && xhr.status) {
             msg += ' (HTTP ' + xhr.status + ')';

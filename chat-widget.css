@@ -50,18 +50,10 @@
     z-index: 99989;
     box-sizing: border-box;
 }
-
 #cw-chat-teaser::after {
-    content: "";
-    position: absolute;
-    right: -7px;
-    bottom: 18px;
-    width: 14px;
-    height: 14px;
-    background: #fff;
-    border-right: 1px solid rgba(0, 0, 0, 0.08);
-    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-    transform: rotate(-45deg);
+    background: var(--cw-teaser-bg) !important;
+    border-right: 1px solid var(--cw-teaser-border);
+    border-bottom: 1px solid var(--cw-teaser-border);
 }
 
 .cw-chat-teaser-body {

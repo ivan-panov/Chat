@@ -47,7 +47,8 @@
     let firstLoad = true;
     let dialogStatus = 'open';
     let isLoadingMsgs = false;
-    let pollTimer = null;
+    let dialogPollTimer = null;
+    let messagePollTimer = null;
     let lastSoundMessageId = 0;
     let lastMarkedReadId = 0;
     let lastReadRequestId = 0;
@@ -58,11 +59,15 @@
     let lastContactRefreshMessageId = 0;
 
     const GEO_RETRY_LIMIT = 6;
-    const MESSAGE_POLL_INTERVAL = 1500;
-    const DIALOG_POLL_INTERVAL = 2000;
+    const MESSAGE_POLL_INTERVAL = 5000;
+    const DIALOG_POLL_INTERVAL = 5000;
+    const HIDDEN_TAB_POLL_INTERVAL = 30000;
+    const ERROR_BACKOFF_MAX_INTERVAL = 30000;
     const FULL_SYNC_EVERY_TICKS = 10;
 
     let messagePollTick = 0;
+    let dialogPollFailures = 0;
+    let messagePollFailures = 0;
     let messagesXhr = null;
     let dialogsXhr = null;
 
@@ -816,7 +821,7 @@
     }
 
     function loadDialogs() {
-        if (dialogsXhr && dialogsXhr.readyState !== 4) return;
+        if (dialogsXhr && dialogsXhr.readyState !== 4) return null;
 
         dialogsXhr = $.ajax({
             url: api + 'dialogs',
@@ -846,9 +851,15 @@
 
                 dialogsBox.html(html);
             }
+        }).done(function () {
+            dialogPollFailures = 0;
+        }).fail(function () {
+            dialogPollFailures += 1;
         }).always(function () {
             dialogsXhr = null;
         });
+
+        return dialogsXhr;
     }
 
     function loadGeo(forceRetry) {
@@ -1018,10 +1029,91 @@
 
                 firstLoad = false;
             }
+        }).done(function () {
+            messagePollFailures = 0;
+        }).fail(function () {
+            messagePollFailures += 1;
         }).always(function () {
             isLoadingMsgs = false;
             messagesXhr = null;
         });
+
+        return messagesXhr;
+    }
+
+    function getAdaptivePollDelay(baseDelay, failures) {
+        if (document.visibilityState && document.visibilityState !== 'visible') {
+            return HIDDEN_TAB_POLL_INTERVAL;
+        }
+
+        if (failures <= 0) {
+            return baseDelay;
+        }
+
+        return Math.min(baseDelay * Math.min(failures + 1, 6), ERROR_BACKOFF_MAX_INTERVAL);
+    }
+
+    function scheduleDialogPolling(delay) {
+        if (dialogPollTimer) {
+            window.clearTimeout(dialogPollTimer);
+        }
+
+        dialogPollTimer = window.setTimeout(function runDialogPolling() {
+            dialogPollTimer = null;
+
+            if (document.visibilityState && document.visibilityState !== 'visible') {
+                scheduleDialogPolling(getAdaptivePollDelay(DIALOG_POLL_INTERVAL, dialogPollFailures));
+                return;
+            }
+
+            const req = loadDialogs();
+            if (req && req.always) {
+                req.always(function () {
+                    scheduleDialogPolling(getAdaptivePollDelay(DIALOG_POLL_INTERVAL, dialogPollFailures));
+                });
+            } else {
+                scheduleDialogPolling(getAdaptivePollDelay(DIALOG_POLL_INTERVAL, dialogPollFailures));
+            }
+        }, delay);
+    }
+
+    function scheduleMessagePolling(delay) {
+        if (messagePollTimer) {
+            window.clearTimeout(messagePollTimer);
+        }
+
+        messagePollTimer = window.setTimeout(function runMessagePolling() {
+            messagePollTimer = null;
+
+            if (!currentDialog || (document.visibilityState && document.visibilityState !== 'visible')) {
+                scheduleMessagePolling(getAdaptivePollDelay(MESSAGE_POLL_INTERVAL, messagePollFailures));
+                return;
+            }
+
+            messagePollTick += 1;
+            const req = loadMessages(messagePollTick % FULL_SYNC_EVERY_TICKS === 0);
+
+            if (req && req.always) {
+                req.always(function () {
+                    scheduleMessagePolling(getAdaptivePollDelay(MESSAGE_POLL_INTERVAL, messagePollFailures));
+                });
+            } else {
+                scheduleMessagePolling(getAdaptivePollDelay(MESSAGE_POLL_INTERVAL, messagePollFailures));
+            }
+        }, delay);
+    }
+
+    function refreshOnVisibilityRestore() {
+        if (document.visibilityState && document.visibilityState !== 'visible') return;
+
+        loadDialogs();
+
+        if (currentDialog) {
+            loadMessages(true);
+        }
+
+        scheduleDialogPolling(DIALOG_POLL_INTERVAL);
+        scheduleMessagePolling(MESSAGE_POLL_INTERVAL);
     }
 
     function resetCurrentDialogView() {
@@ -1218,19 +1310,8 @@
         });
     });
 
-    $(window).on('focus', function () {
-        if (currentDialog) {
-            loadMessages(true);
-            loadDialogs();
-        }
-    });
-
-    $(document).on('visibilitychange', function () {
-        if (document.visibilityState === 'visible' && currentDialog) {
-            loadMessages(true);
-            loadDialogs();
-        }
-    });
+    $(window).on('focus', refreshOnVisibilityRestore);
+    $(document).on('visibilitychange', refreshOnVisibilityRestore);
 
     $(function () {
         setInputEnabled(false);
@@ -1360,16 +1441,8 @@
             }
         });
 
-        setInterval(function () {
-            loadDialogs();
-        }, DIALOG_POLL_INTERVAL);
-
-        pollTimer = setInterval(function () {
-            if (!currentDialog) return;
-
-            messagePollTick += 1;
-            loadMessages(messagePollTick % FULL_SYNC_EVERY_TICKS === 0);
-        }, MESSAGE_POLL_INTERVAL);
+        scheduleDialogPolling(DIALOG_POLL_INTERVAL);
+        scheduleMessagePolling(MESSAGE_POLL_INTERVAL);
     });
 
 })(jQuery);

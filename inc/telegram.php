@@ -1626,6 +1626,12 @@ function cw_tg_webhook_process_update_after_ack(array $update, string $header_se
         $action = sanitize_key($matches[1]);
         $dialog = intval($matches[2]);
 
+        $button_lock_key = 'cw_tg_button_' . md5($action . '|' . $dialog);
+        if (get_transient($button_lock_key)) {
+            return ['status' => 'duplicate_button'];
+        }
+        set_transient($button_lock_key, 1, 3);
+
         if ($callback_id !== '') {
             $callback_lock_key = 'cw_tg_cb_' . md5($callback_id);
             if (get_transient($callback_lock_key)) {

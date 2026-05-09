@@ -802,6 +802,373 @@ function cw_prepare_display_filename(string $filename): string {
     return $ext !== '' ? ($name . '.' . $ext) : $name;
 }
 
+
+function cw_upload_allowed_mimes(): array {
+    $mimes = [
+        'jpg|jpeg|jpe' => 'image/jpeg',
+        'png'          => 'image/png',
+        'gif'          => 'image/gif',
+        'webp'         => 'image/webp',
+        'pdf'          => 'application/pdf',
+        'doc'          => 'application/msword',
+        'docx'         => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'xls'          => 'application/vnd.ms-excel',
+        'xlsx'         => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'txt'          => 'text/plain',
+        'zip'          => 'application/zip',
+        'rar'          => 'application/x-rar-compressed',
+    ];
+
+    $filtered = apply_filters('cw_upload_allowed_mimes', $mimes);
+    return is_array($filtered) ? $filtered : $mimes;
+}
+
+function cw_detect_file_mime_type(string $path): string {
+    $mime = '';
+
+    if (function_exists('finfo_open')) {
+        $finfo = @finfo_open(FILEINFO_MIME_TYPE);
+        if ($finfo) {
+            $detected = @finfo_file($finfo, $path);
+            @finfo_close($finfo);
+            if (is_string($detected)) {
+                $mime = trim(strtolower($detected));
+            }
+        }
+    }
+
+    if ($mime === '' && function_exists('mime_content_type')) {
+        $detected = @mime_content_type($path);
+        if (is_string($detected)) {
+            $mime = trim(strtolower($detected));
+        }
+    }
+
+    return $mime;
+}
+
+function cw_upload_openxml_package_matches(string $path, string $ext): bool {
+    if (!class_exists('ZipArchive')) {
+        return true;
+    }
+
+    $zip = new ZipArchive();
+    if ($zip->open($path) !== true) {
+        return false;
+    }
+
+    $has_content_types = $zip->locateName('[Content_Types].xml') !== false;
+    $has_expected_part = false;
+
+    if ($ext === 'docx') {
+        $has_expected_part = $zip->locateName('word/document.xml') !== false;
+    } elseif ($ext === 'xlsx') {
+        $has_expected_part = $zip->locateName('xl/workbook.xml') !== false;
+    }
+
+    $zip->close();
+
+    return $has_content_types && $has_expected_part;
+}
+
+function cw_upload_magic_bytes_match(string $path, string $ext): bool {
+    $handle = @fopen($path, 'rb');
+    if (!$handle) {
+        return false;
+    }
+
+    $head = (string) @fread($handle, 12);
+    @fclose($handle);
+
+    if ($ext === 'pdf') {
+        return strncmp($head, '%PDF-', 5) === 0;
+    }
+
+    if ($ext === 'zip') {
+        return strncmp($head, "PK\x03\x04", 4) === 0
+            || strncmp($head, "PK\x05\x06", 4) === 0
+            || strncmp($head, "PK\x07\x08", 4) === 0;
+    }
+
+    if ($ext === 'rar') {
+        return strncmp($head, "Rar!\x1A\x07", 6) === 0;
+    }
+
+    return true;
+}
+
+function cw_upload_detected_mime_matches_extension(string $ext, string $mime, string $path): bool {
+    if ($mime === '') {
+        return true;
+    }
+
+    $expected = [
+        'jpg'  => ['image/jpeg', 'image/pjpeg'],
+        'jpeg' => ['image/jpeg', 'image/pjpeg'],
+        'jpe'  => ['image/jpeg', 'image/pjpeg'],
+        'png'  => ['image/png', 'image/x-png'],
+        'gif'  => ['image/gif'],
+        'webp' => ['image/webp'],
+        'pdf'  => ['application/pdf', 'application/x-pdf'],
+        'txt'  => ['text/plain'],
+        'doc'  => ['application/msword', 'application/vnd.ms-office', 'application/x-ole-storage'],
+        'xls'  => ['application/vnd.ms-excel', 'application/vnd.ms-office', 'application/x-ole-storage'],
+        'docx' => ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/zip', 'application/x-zip', 'application/x-zip-compressed'],
+        'xlsx' => ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/zip', 'application/x-zip', 'application/x-zip-compressed'],
+        'zip'  => ['application/zip', 'application/x-zip', 'application/x-zip-compressed'],
+        'rar'  => ['application/vnd.rar', 'application/x-rar', 'application/x-rar-compressed'],
+    ];
+
+    if (!isset($expected[$ext]) || !in_array($mime, $expected[$ext], true)) {
+        return false;
+    }
+
+    if (in_array($ext, ['jpg', 'jpeg', 'jpe', 'png', 'gif', 'webp'], true)) {
+        $info = @getimagesize($path);
+        return is_array($info) && !empty($info['mime']) && in_array(strtolower((string) $info['mime']), $expected[$ext], true);
+    }
+
+    if (in_array($ext, ['pdf', 'zip', 'rar'], true)) {
+        return cw_upload_magic_bytes_match($path, $ext);
+    }
+
+    if (in_array($ext, ['docx', 'xlsx'], true)) {
+        return cw_upload_openxml_package_matches($path, $ext);
+    }
+
+    return true;
+}
+
+function cw_validate_uploaded_file_mime(array $file, array $allowed_mimes) {
+    $tmp_name = isset($file['tmp_name']) ? (string) $file['tmp_name'] : '';
+    $filename = isset($file['name']) ? (string) $file['name'] : '';
+
+    if ($tmp_name === '' || $filename === '' || !is_readable($tmp_name)) {
+        return new WP_REST_Response([
+            'error'   => 'invalid_upload_file',
+            'details' => 'Не удалось проверить загруженный файл.',
+        ], 400);
+    }
+
+    $wp_check = function_exists('wp_check_filetype_and_ext')
+        ? wp_check_filetype_and_ext($tmp_name, $filename, $allowed_mimes)
+        : wp_check_filetype($filename, $allowed_mimes);
+
+    $ext  = isset($wp_check['ext']) ? strtolower((string) $wp_check['ext']) : '';
+    $type = isset($wp_check['type']) ? strtolower((string) $wp_check['type']) : '';
+
+    if ($ext === '' || $type === '') {
+        return new WP_REST_Response([
+            'error'   => 'invalid_file_type',
+            'details' => 'Тип файла не разрешён или не соответствует расширению.',
+        ], 400);
+    }
+
+    $detected_mime = cw_detect_file_mime_type($tmp_name);
+    if (!cw_upload_detected_mime_matches_extension($ext, $detected_mime, $tmp_name)) {
+        return new WP_REST_Response([
+            'error'         => 'invalid_file_mime',
+            'details'       => 'MIME-тип файла не соответствует разрешённому расширению.',
+            'detected_mime' => $detected_mime,
+        ], 400);
+    }
+
+    return true;
+}
+
+
+function cw_upload_quota_limit_bytes(): int {
+    return max(1, (int) apply_filters('cw_upload_quota_limit_bytes', 20 * 1024 * 1024));
+}
+
+function cw_upload_quota_window_seconds(): int {
+    return max(60, (int) apply_filters('cw_upload_quota_window_seconds', 60 * 60));
+}
+
+function cw_upload_quota_transient_key(WP_REST_Request $r, int $dialog_id): string {
+    $client_key = cw_get_client_key_from_request($r);
+
+    if ($client_key === '') {
+        $client_key = 'ip:' . cw_get_real_ip() . ':dialog:' . $dialog_id;
+    }
+
+    return 'cw_uq_' . substr(hash('sha256', $client_key), 0, 32);
+}
+
+function cw_upload_quota_get_usage(WP_REST_Request $r, int $dialog_id): array {
+    $key    = cw_upload_quota_transient_key($r, $dialog_id);
+    $now    = time();
+    $window = cw_upload_quota_window_seconds();
+    $state  = get_transient($key);
+
+    if (!is_array($state)) {
+        $state = [];
+    }
+
+    $items = isset($state['items']) && is_array($state['items']) ? $state['items'] : [];
+    $fresh = [];
+    $used  = 0;
+
+    foreach ($items as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+
+        $ts   = isset($item['ts']) ? (int) $item['ts'] : 0;
+        $size = isset($item['size']) ? max(0, (int) $item['size']) : 0;
+
+        if ($ts > 0 && $size > 0 && ($now - $ts) < $window) {
+            $fresh[] = ['ts' => $ts, 'size' => $size];
+            $used += $size;
+        }
+    }
+
+    if (count($fresh) !== count($items)) {
+        set_transient($key, ['items' => $fresh], $window + 300);
+    }
+
+    return [
+        'key'    => $key,
+        'items'  => $fresh,
+        'used'   => $used,
+        'limit'  => cw_upload_quota_limit_bytes(),
+        'window' => $window,
+    ];
+}
+
+function cw_upload_quota_check(WP_REST_Request $r, int $dialog_id, int $incoming_size) {
+    $incoming_size = max(0, $incoming_size);
+    $usage = cw_upload_quota_get_usage($r, $dialog_id);
+
+    if (($usage['used'] + $incoming_size) <= $usage['limit']) {
+        return true;
+    }
+
+    $oldest_ts = 0;
+    foreach ($usage['items'] as $item) {
+        $ts = isset($item['ts']) ? (int) $item['ts'] : 0;
+        if ($ts > 0 && ($oldest_ts === 0 || $ts < $oldest_ts)) {
+            $oldest_ts = $ts;
+        }
+    }
+
+    $reset_after = $oldest_ts > 0
+        ? max(1, ($oldest_ts + (int) $usage['window']) - time())
+        : (int) $usage['window'];
+
+    return new WP_REST_Response([
+        'error'             => 'upload_quota_exceeded',
+        'details'           => 'Превышен лимит загрузок: не более 20 МБ за 60 минут.',
+        'limit_bytes'       => (int) $usage['limit'],
+        'used_bytes'        => (int) $usage['used'],
+        'incoming_bytes'    => $incoming_size,
+        'window_seconds'    => (int) $usage['window'],
+        'reset_after'       => $reset_after,
+    ], 429);
+}
+
+function cw_upload_quota_record(WP_REST_Request $r, int $dialog_id, int $uploaded_size): void {
+    $uploaded_size = max(0, $uploaded_size);
+    if ($uploaded_size <= 0) {
+        return;
+    }
+
+    $usage = cw_upload_quota_get_usage($r, $dialog_id);
+    $items = $usage['items'];
+    $items[] = ['ts' => time(), 'size' => $uploaded_size];
+
+    set_transient($usage['key'], ['items' => $items], ((int) $usage['window']) + 300);
+}
+
+function cw_upload_rate_limit_max_attempts(): int {
+    return max(1, (int) apply_filters('cw_upload_rate_limit_max_attempts', 10));
+}
+
+function cw_upload_rate_limit_window_seconds(): int {
+    return max(60, (int) apply_filters('cw_upload_rate_limit_window_seconds', 10 * 60));
+}
+
+function cw_upload_rate_limit_transient_key(WP_REST_Request $r, int $dialog_id): string {
+    $client_key = cw_get_client_key_from_request($r);
+
+    if ($client_key === '') {
+        $client_key = 'ip:' . cw_get_real_ip() . ':dialog:' . $dialog_id;
+    }
+
+    return 'cw_ur_' . substr(hash('sha256', $client_key), 0, 32);
+}
+
+function cw_upload_rate_limit_get_usage(WP_REST_Request $r, int $dialog_id): array {
+    $key    = cw_upload_rate_limit_transient_key($r, $dialog_id);
+    $now    = time();
+    $window = cw_upload_rate_limit_window_seconds();
+    $state  = get_transient($key);
+
+    if (!is_array($state)) {
+        $state = [];
+    }
+
+    $items = isset($state['items']) && is_array($state['items']) ? $state['items'] : [];
+    $fresh = [];
+
+    foreach ($items as $item) {
+        $ts = is_array($item) && isset($item['ts']) ? (int) $item['ts'] : (int) $item;
+
+        if ($ts > 0 && ($now - $ts) < $window) {
+            $fresh[] = ['ts' => $ts];
+        }
+    }
+
+    if (count($fresh) !== count($items)) {
+        set_transient($key, ['items' => $fresh], $window + 300);
+    }
+
+    return [
+        'key'     => $key,
+        'items'   => $fresh,
+        'count'   => count($fresh),
+        'limit'   => cw_upload_rate_limit_max_attempts(),
+        'window'  => $window,
+    ];
+}
+
+function cw_upload_rate_limit_check(WP_REST_Request $r, int $dialog_id) {
+    $usage = cw_upload_rate_limit_get_usage($r, $dialog_id);
+
+    if ((int) $usage['count'] < (int) $usage['limit']) {
+        return true;
+    }
+
+    $oldest_ts = 0;
+    foreach ($usage['items'] as $item) {
+        $ts = isset($item['ts']) ? (int) $item['ts'] : 0;
+        if ($ts > 0 && ($oldest_ts === 0 || $ts < $oldest_ts)) {
+            $oldest_ts = $ts;
+        }
+    }
+
+    $reset_after = $oldest_ts > 0
+        ? max(1, ($oldest_ts + (int) $usage['window']) - time())
+        : (int) $usage['window'];
+
+    return new WP_REST_Response([
+        'error'          => 'upload_rate_limited',
+        'details'        => 'Слишком много попыток загрузки: не более 10 файлов за 10 минут.',
+        'limit'          => (int) $usage['limit'],
+        'used'           => (int) $usage['count'],
+        'window_seconds' => (int) $usage['window'],
+        'reset_after'    => $reset_after,
+    ], 429);
+}
+
+function cw_upload_rate_limit_record(WP_REST_Request $r, int $dialog_id): void {
+    $usage = cw_upload_rate_limit_get_usage($r, $dialog_id);
+    $items = $usage['items'];
+    $items[] = ['ts' => time()];
+
+    set_transient($usage['key'], ['items' => $items], ((int) $usage['window']) + 300);
+}
+
 /* ============================================================
    COMMANDS HELPERS
 ============================================================ */
@@ -1048,6 +1415,10 @@ function cw_rest_dialogs(WP_REST_Request $r) {
 
         $dialog_id = (int) $wpdb->insert_id;
 
+        if ($dialog_id > 0 && function_exists('cw_api_dispatch_event')) {
+            cw_api_dispatch_event('dialog.created', $dialog_id);
+        }
+
         return ['id' => $dialog_id];
     }
 
@@ -1212,31 +1583,39 @@ function cw_rest_messages(WP_REST_Request $r) {
 
         $file = $_FILES['file'];
         $maxSize = 20 * 1024 * 1024;
+        $fileSize = isset($file['size']) ? max(0, intval($file['size'])) : 0;
 
-        if (!empty($file['size']) && intval($file['size']) > $maxSize) {
+        if ($fileSize > $maxSize) {
             return new WP_REST_Response(['error' => 'file_too_large'], 400);
+        }
+
+        if (!$isOp) {
+            $rate_guard = cw_upload_rate_limit_check($r, $id);
+            if ($rate_guard !== true) {
+                return $rate_guard;
+            }
+
+            cw_upload_rate_limit_record($r, $id);
+
+            $quota_guard = cw_upload_quota_check($r, $id, $fileSize);
+            if ($quota_guard !== true) {
+                return $quota_guard;
+            }
         }
 
         $display_name   = cw_prepare_display_filename((string) ($file['name'] ?? ''));
         $converted_name = cw_transliterate_filename((string) ($file['name'] ?? ''));
         $file['name']   = $converted_name;
 
+        $allowed_mimes = cw_upload_allowed_mimes();
+        $mime_guard = cw_validate_uploaded_file_mime($file, $allowed_mimes);
+        if ($mime_guard !== true) {
+            return $mime_guard;
+        }
+
         $overrides = [
             'test_form' => false,
-            'mimes' => [
-                'jpg|jpeg|jpe' => 'image/jpeg',
-                'png'          => 'image/png',
-                'gif'          => 'image/gif',
-                'webp'         => 'image/webp',
-                'pdf'          => 'application/pdf',
-                'doc'          => 'application/msword',
-                'docx'         => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                'xls'          => 'application/vnd.ms-excel',
-                'xlsx'         => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                'txt'          => 'text/plain',
-                'zip'          => 'application/zip',
-                'rar'          => 'application/x-rar-compressed',
-            ],
+            'mimes' => $allowed_mimes,
         ];
 
         add_filter('upload_dir', 'cw_chat_widget_upload_dir');
@@ -1287,6 +1666,14 @@ function cw_rest_messages(WP_REST_Request $r) {
 
         if (!$isOp && $has_user_messages === 0) {
             cw_insert_system_message($id, cw_get_first_reply_waiting_message());
+        }
+
+        if (!$isOp && $new_message_id > 0) {
+            cw_upload_quota_record($r, $id, $fileSize);
+        }
+
+        if ($new_message_id > 0 && function_exists('cw_api_dispatch_event')) {
+            cw_api_dispatch_event('message.created', $id, $new_message_id);
         }
 
         if (!$isOp && $new_message_id > 0) {
@@ -1373,6 +1760,10 @@ function cw_rest_messages(WP_REST_Request $r) {
 
     if (!$isOp && $has_user_messages === 0 && empty($bot_result['handled'])) {
         cw_insert_system_message($id, cw_get_first_reply_waiting_message());
+    }
+
+    if ($new_message_id > 0 && function_exists('cw_api_dispatch_event')) {
+        cw_api_dispatch_event('message.created', $id, $new_message_id);
     }
 
     if (!$isOp && $new_message_id > 0 && empty($bot_result['handled'])) {

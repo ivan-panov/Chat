@@ -1387,7 +1387,10 @@ body.cw-modal-open {
 
 .cw-settings-field input[type="text"],
 .cw-settings-field input[type="password"],
-.cw-settings-field input[type="number"] {
+.cw-settings-field input[type="number"],
+.cw-settings-field input[type="url"],
+.cw-settings-field input[type="email"],
+.cw-settings-field select {
     width: 100%;
     min-height: 44px;
     padding: 9px 12px;
@@ -1403,7 +1406,10 @@ body.cw-modal-open {
 
 .cw-settings-field input[type="text"]:focus,
 .cw-settings-field input[type="password"]:focus,
-.cw-settings-field input[type="number"]:focus {
+.cw-settings-field input[type="number"]:focus,
+.cw-settings-field input[type="url"]:focus,
+.cw-settings-field input[type="email"]:focus,
+.cw-settings-field select:focus {
     background: #ffffff;
     border-color: rgba(255, 152, 0, 0.72);
     box-shadow: 0 0 0 3px rgba(255, 152, 0, 0.16);
@@ -2035,5 +2041,115 @@ body.cw-bot-rule-modal-open {
 
     .cw-bot-rule-modal-actions .button {
         width: 100%;
+    }
+}
+
+/* =========================================
+   API / CRM compact settings page
+========================================= */
+.cw-api-settings-page .cw-api-card-compact .cw-settings-card-head {
+    margin-bottom: 14px;
+}
+
+.cw-api-settings-page .cw-api-compact-stack {
+    display: grid;
+    gap: 12px;
+}
+
+.cw-api-settings-page .cw-api-card-compact .cw-settings-field {
+    margin-bottom: 0;
+}
+
+.cw-api-settings-page .cw-api-inline-check,
+.cw-api-settings-page .cw-api-event-check {
+    display: flex !important;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: #fffaf0;
+    border: 1px solid rgba(255, 152, 0, 0.14);
+    cursor: pointer;
+}
+
+.cw-api-settings-page .cw-api-inline-check input[type="checkbox"],
+.cw-api-settings-page .cw-api-event-check input[type="checkbox"] {
+    flex: 0 0 auto;
+    margin: 0;
+}
+
+.cw-api-settings-page .cw-api-inline-check span,
+.cw-api-settings-page .cw-api-event-check span {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.cw-api-settings-page .cw-api-inline-check strong,
+.cw-api-settings-page .cw-api-event-check strong {
+    color: #1f2430;
+    font-size: 13px;
+    line-height: 1.35;
+    font-weight: 800;
+}
+
+.cw-api-settings-page .cw-api-inline-check em {
+    color: #5f6676;
+    font-size: 12px;
+    line-height: 1.35;
+    font-style: normal;
+    font-weight: 600;
+}
+
+.cw-api-settings-page .cw-api-short-row {
+    display: grid;
+    grid-template-columns: minmax(110px, 180px) minmax(0, 1fr);
+    gap: 12px;
+    align-items: end;
+}
+
+.cw-api-settings-page .cw-api-ssl-check {
+    min-height: 44px;
+}
+
+.cw-api-settings-page .cw-api-events-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.cw-api-settings-page .cw-api-event-check {
+    min-height: 48px;
+}
+
+.cw-api-settings-page .cw-api-event-check span {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+}
+
+.cw-api-settings-page .cw-api-event-check code {
+    padding: 2px 6px;
+    border-radius: 7px;
+    background: #f2f4f8;
+    color: #1f2430;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    font-size: 11px;
+    line-height: 1.4;
+    font-weight: 700;
+}
+
+@media (max-width: 782px) {
+    .cw-api-settings-page .cw-api-short-row,
+    .cw-api-settings-page .cw-api-events-list {
+        grid-template-columns: 1fr;
+    }
+
+    .cw-api-settings-page .cw-api-inline-check span {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 3px;
     }
 }

@@ -1,14 +1,27 @@
 <?php
 // Ultra-light Telegram webhook endpoint.
-// This file must answer Telegram before any heavy work. It writes the update to a
-// small file queue and only then starts the worker after the HTTP response is closed.
+// It writes incoming updates to a small file queue, answers Telegram immediately,
+// and starts the worker only when no worker is already active.
 
 function cw_tg_direct_json_encode($payload): string {
     $json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     return is_string($json) ? $json : '{"status":"ok"}';
 }
 
-function cw_tg_direct_callback_payload(array $update, string $text = 'Команда принята', bool $show_alert = false): array {
+function cw_tg_direct_text(string $key): string {
+    $texts = [
+        'accepted' => '&#1050;&#1086;&#1084;&#1072;&#1085;&#1076;&#1072; &#1087;&#1088;&#1080;&#1085;&#1103;&#1090;&#1072;',
+        'already' => '&#1050;&#1086;&#1084;&#1072;&#1085;&#1076;&#1072; &#1091;&#1078;&#1077; &#1087;&#1088;&#1080;&#1085;&#1103;&#1090;&#1072;',
+        'queue_unavailable' => '&#1054;&#1095;&#1077;&#1088;&#1077;&#1076;&#1100; Telegram &#1085;&#1077;&#1076;&#1086;&#1089;&#1090;&#1091;&#1087;&#1085;&#1072;',
+    ];
+
+    return html_entity_decode((string) ($texts[$key] ?? $texts['accepted']), ENT_QUOTES, 'UTF-8');
+}
+
+function cw_tg_direct_callback_payload(array $update, string $text = '', bool $show_alert = false): array {
+    if ($text === '') {
+        $text = cw_tg_direct_text('accepted');
+    }
     $callback_id = '';
     if (!empty($update['callback_query']) && is_array($update['callback_query'])) {
         $callback_id = (string) ($update['callback_query']['id'] ?? '');
@@ -55,7 +68,6 @@ function cw_tg_direct_finish_client(): bool {
 }
 
 function cw_tg_direct_queue_dir(): string {
-    // tg-webhook.php is in wp-content/plugins/chat-widget/.
     $wp_content = dirname(__DIR__, 2);
     $uploads = $wp_content . '/uploads';
 
@@ -81,6 +93,75 @@ function cw_tg_direct_log(string $message): void {
     if ($dir !== '' && is_dir($dir) && is_writable($dir)) {
         @file_put_contents($dir . '/webhook.log', '[' . date('Y-m-d H:i:s') . '] ' . $message . "\n", FILE_APPEND | LOCK_EX);
     }
+}
+
+function cw_tg_direct_worker_marker_file(): string {
+    return rtrim(cw_tg_direct_queue_dir(), '/\\') . '/worker-active.lock';
+}
+
+function cw_tg_direct_worker_marker_is_active(int $ttl = 45): bool {
+    $file = cw_tg_direct_worker_marker_file();
+    if (!is_file($file)) {
+        return false;
+    }
+
+    $age = time() - (int) @filemtime($file);
+    if ($age >= 0 && $age <= $ttl) {
+        return true;
+    }
+
+    @unlink($file);
+    return false;
+}
+
+function cw_tg_direct_mark_worker_active(): void {
+    @file_put_contents(cw_tg_direct_worker_marker_file(), (string) time(), LOCK_EX);
+}
+
+function cw_tg_direct_clear_worker_marker(): void {
+    @unlink(cw_tg_direct_worker_marker_file());
+}
+
+function cw_tg_direct_cleanup_button_locks(): void {
+    if (mt_rand(1, 20) !== 1) {
+        return;
+    }
+
+    $dir = cw_tg_direct_queue_dir();
+    foreach ((array) glob(rtrim($dir, '/\\') . '/button-*.lock') as $file) {
+        if (is_file($file) && time() - (int) @filemtime($file) > 60) {
+            @unlink($file);
+        }
+    }
+}
+
+function cw_tg_direct_is_duplicate_button(array $update, int $ttl = 3): bool {
+    if (empty($update['callback_query']) || !is_array($update['callback_query'])) {
+        return false;
+    }
+
+    $callback = $update['callback_query'];
+    $data = (string) ($callback['data'] ?? '');
+    if ($data === '') {
+        return false;
+    }
+
+    $from_id = (string) ($callback['from']['id'] ?? '');
+    $key = md5($from_id . '|' . $data);
+    $file = rtrim(cw_tg_direct_queue_dir(), '/\\') . '/button-' . $key . '.lock';
+
+    cw_tg_direct_cleanup_button_locks();
+
+    if (is_file($file)) {
+        $age = time() - (int) @filemtime($file);
+        if ($age >= 0 && $age <= $ttl) {
+            return true;
+        }
+        @unlink($file);
+    }
+
+    @file_put_contents($file, (string) time(), LOCK_EX);
+    return false;
 }
 
 function cw_tg_direct_enqueue_update(array $update, string $header_secret, string $raw): bool {
@@ -159,12 +240,23 @@ function cw_tg_direct_spawn_worker(): bool {
         return false;
     }
 
+    if (cw_tg_direct_worker_marker_is_active()) {
+        cw_tg_direct_log('worker_already_active_skip_spawn');
+        return true;
+    }
+
+    cw_tg_direct_mark_worker_active();
+
     $php = cw_tg_direct_php_binary();
     $cmd = escapeshellarg($php) . ' ' . escapeshellarg($worker) . ' > /dev/null 2>&1 &';
 
     if (function_exists('exec')) {
         @exec($cmd, $output, $code);
         cw_tg_direct_log('worker_exec_started code=' . (string) $code);
+        if ((int) $code !== 0) {
+            cw_tg_direct_clear_worker_marker();
+            return false;
+        }
         return true;
     }
 
@@ -177,13 +269,12 @@ function cw_tg_direct_spawn_worker(): bool {
         }
     }
 
+    cw_tg_direct_clear_worker_marker();
     cw_tg_direct_log('worker_spawn_unavailable');
     return false;
 }
 
 function cw_tg_direct_process_queue_inline_if_possible(): void {
-    // Fallback for shared hosting where exec/popen are disabled. This runs only
-    // after fastcgi_finish_request(), so Telegram should already have the answer.
     $wp_load = __DIR__ . '/../../../wp-load.php';
     if (!is_file($wp_load)) {
         cw_tg_direct_log('inline_wp_load_missing');
@@ -200,6 +291,8 @@ function cw_tg_direct_process_queue_inline_if_possible(): void {
         }
     } catch (Throwable $e) {
         cw_tg_direct_log('inline_error ' . $e->getMessage());
+    } finally {
+        cw_tg_direct_clear_worker_marker();
     }
 }
 
@@ -217,11 +310,19 @@ if (!is_array($update)) {
 }
 
 $header_secret = (string) ($_SERVER['HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN'] ?? '');
+
+if (cw_tg_direct_is_duplicate_button($update, 3)) {
+    cw_tg_direct_log('button_duplicate_skipped');
+    cw_tg_direct_send_response(cw_tg_direct_callback_payload($update, cw_tg_direct_text('already')), 200);
+    cw_tg_direct_finish_client();
+    exit;
+}
+
 $queued = cw_tg_direct_enqueue_update($update, $header_secret, $raw);
 
 $response_payload = $queued
-    ? cw_tg_direct_callback_payload($update, 'Команда принята')
-    : cw_tg_direct_callback_payload($update, 'Очередь Telegram недоступна', true);
+    ? cw_tg_direct_callback_payload($update, cw_tg_direct_text('accepted'))
+    : cw_tg_direct_callback_payload($update, cw_tg_direct_text('queue_unavailable'), true);
 
 cw_tg_direct_send_response($response_payload, 200);
 $client_finished = cw_tg_direct_finish_client();
