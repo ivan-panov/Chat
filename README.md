@@ -4,7 +4,7 @@
 
 Лёгкий, быстрый и функциональный плагин чата для WordPress с мощными интеграциями.
 
-[Chat Widget]<img width="500" height="300" alt="image" src="https://github.com/user-attachments/assets/84737b7f-d645-4290-9c80-1e92a4884425" /><img width="399" height="658" alt="image" src="https://github.com/user-attachments/assets/3bd70532-509a-43fb-8658-8b3417be67d7" />
+[Chat Widget]<img width="500" height="300" alt="image" src="https://github.com/user-attachments/assets/84737b7f-d645-4290-9c80-1e92a4884425" /><img width="200" height="300" alt="image" src="https://github.com/user-attachments/assets/3bd70532-509a-43fb-8658-8b3417be67d7" />
 
  
 *(добавьте скриншоты виджета и панели оператора)*
